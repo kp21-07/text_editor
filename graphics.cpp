@@ -3,6 +3,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #define RGFW_IMPLEMENTATION
 #define RGFW_OPENGL
+#define RGFW_NO_X11_CURSOR
 
 #include "vendor/glad.h"
 #include "vendor/glad.c"
@@ -24,7 +25,7 @@ enum {
 	Uniform_Count,
 };
 
-enum : u32 {
+enum : u16 {
 	Texture_White,
 	Texture_Font,
 	Texture_Count
@@ -34,9 +35,12 @@ struct Vertex {
 	struct { u16 x, y; } pos;
 	struct { u16 u, v; } uv;   // normalized [0, MAX_U16] maps to [0.0, 1.0]
 	u32 color;
-	u32 tex_id;
+	u16 tex_id;
+	struct { s8 x, y; } circle; 
 	struct { u16 x0, y0, x1, y1; } clip;
 };
+
+const u64 vertex_size = sizeof(Vertex);
 
 global struct {
 	RGFW_window *win;
@@ -108,10 +112,10 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	////////////// opengl renderer setup //////////////
 
 	auto vertex_buf  = alloc_slice(persist, Vertex, MAX_VERTICES);
-	gfx.vertices     = list_from_backing_buffer(vertex_buf);
+	gfx.vertices     = list_from_buffer(vertex_buf);
 
 	auto index_buf   = alloc_slice(persist, u16, MAX_VERTICES);
-	gfx.indices      = list_from_backing_buffer(index_buf);
+	gfx.indices      = list_from_buffer(index_buf);
 
 	glGenVertexArrays(1, &gfx.vao);
 	glGenBuffers(1, &gfx.vbo);
@@ -135,10 +139,13 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, color));
 
 	glEnableVertexAttribArray(3);
-	glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
+	glVertexAttribIPointer(3, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
 
 	glEnableVertexAttribArray(4);
-	glVertexAttribPointer(4, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
+	glVertexAttribPointer(4, 2, GL_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, circle));
+
+	glEnableVertexAttribArray(5);
+	glVertexAttribPointer(5, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
 
 	{
 		string vs = S(
@@ -147,10 +154,12 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"layout (location = 1) in vec2  a_uv;"
 			"layout (location = 2) in vec4  a_color;"
 			"layout (location = 3) in uint  a_texid;"
-			"layout (location = 4) in vec4  a_clip;"
+			"layout (location = 4) in vec2  a_circ;"
+			"layout (location = 5) in vec4  a_clip;"
 			"out vec4       v_color;"
 			"out vec2       v_uv;"
 			"out vec2       v_pos;"
+			"out vec2       v_circ;"
 			"out vec4       v_clip;"
 			"flat out uint  v_texid;"
 			"uniform vec2   u_resolution;"
@@ -159,6 +168,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"   v_uv     = a_uv;"
 			"   v_texid  = a_texid;"
 			"	v_pos    = a_pos;"
+			"	v_circ   = a_circ;"
 			"	v_clip   = a_clip;"
 			"   vec2 ndc = (a_pos / u_resolution) * 2.0 - 1.0;"
 			"   ndc.y    = -ndc.y;"
@@ -171,6 +181,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"in vec4       v_color;"
 			"in vec2       v_uv;"
 			"in vec2       v_pos;"
+			"in vec2       v_circ;"
 			"in vec4       v_clip;"
 			"flat in uint  v_texid;"
 			"out vec4      Frag_Color;"
@@ -182,7 +193,11 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"   vec4 pixel;"
 			"   if (v_texid == 0u) { pixel = texture(u_textures[0], v_uv); }"
 			"   else               { pixel = texture(u_textures[1], v_uv); }"
+			"   float dist = length(v_circ);"
+			"   float aa = fwidth(dist) * 0.5;"
+			"   float mask = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, dist);"
 			"   Frag_Color = v_color * pixel;"
+			"   Frag_Color.a *= mask;"
 			"}"
 		);
 
@@ -282,7 +297,6 @@ graphics_update(u32 color, Frame_Input *input)
 
 	if (RGFW_window_shouldClose(gfx.win)) return false;
 
-
 	f32 a = ((color >> 24) & 0xFF) / 255.0f;
 	f32 b = ((color >> 16) & 0xFF) / 255.0f;
 	f32 g = ((color >>  8) & 0xFF) / 255.0f;
@@ -309,7 +323,7 @@ graphics_update(u32 color, Frame_Input *input)
 
 	RGFW_window_swapBuffers_OpenGL(gfx.win);
 
-	RGFW_waitForEvent(-1);
+	// RGFW_waitForEvent(-1);
 	RGFW_event event = {0};
 	while (RGFW_window_checkEvent(gfx.win, &event)) {
 		switch (event.type) {
@@ -348,8 +362,13 @@ rects_overlap(f32 ax, f32 ay, f32 aw, f32 ah, f32 bx, f32 by, f32 bw, f32 bh)
 }
 
 funcdef void
-draw_quad(vec2 pos, vec2 size, u32 color, u32 texture, vec2 uv0, vec2 uv1)
+draw_quad(vec2 pos, vec2 size, u32 color, u16 texture, vec2 uv0, vec2 uv1, ivec2 circ0, ivec2 circ1)
 {
+	s8 cr0_x = (s8) circ0.x;
+	s8 cr0_y = (s8) circ0.y;
+	s8 cr1_x = (s8) circ1.x;
+	s8 cr1_y = (s8) circ1.y;
+
 	f32 x = pos.x,  y = pos.y;
 	f32 w = size.x, h = size.y;
 
@@ -370,10 +389,10 @@ draw_quad(vec2 pos, vec2 size, u32 color, u32 texture, vec2 uv0, vec2 uv1)
 	u16 c2 = (u16)(clip.from.x + clip.size.x);
 	u16 c3 = (u16)(clip.from.y + clip.size.y);
 
-	append(&gfx.vertices, Vertex { { (u16)x,       (u16)y }, { u0, v0 }, color, texture, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (u16)(x + w), (u16)y }, { u1, v0 }, color, texture, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (u16)(x + w), (u16)(y + h) }, { u1, v1 }, color, texture, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (u16)x,       (u16)(y + h) }, { u0, v1 }, color, texture, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (u16)x,       (u16)y }, { u0, v0 }, color, texture, {cr0_x, cr0_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (u16)(x + w), (u16)y }, { u1, v0 }, color, texture, {cr1_x, cr0_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (u16)(x + w), (u16)(y + h) }, { u1, v1 }, color, texture, {cr1_x, cr1_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (u16)x,       (u16)(y + h) }, { u0, v1 }, color, texture, {cr0_x, cr1_y}, { c0, c1, c2, c3 } });
 
 	append(&gfx.indices, (u16)(i + 0));
 	append(&gfx.indices, (u16)(i + 1));
@@ -445,6 +464,35 @@ draw_text(string s, vec2 start_pos, u32 color)
 	result.y = max_y - min_y;
     
 	return result;
+}
+
+funcdef void
+draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color)
+{
+	draw_quad({pos.x, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {127, 127}, {0, 0});
+	draw_quad({pos.x + size.x - radius, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {0, 127}, {127, 0});
+	draw_quad({pos.x + size.x - radius, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {0, 0}, {127, 127});
+	draw_quad({pos.x, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {127, 0}, {0, 127});
+	draw_quad({pos.x + radius, pos.y}, {size.x - radius * 2, size.y}, color);
+	draw_quad({pos.x, pos.y + radius}, {size.x - radius * 2, size.y - radius * 2}, color);
+	draw_quad({pos.x + size.x - radius, pos.y + radius}, {radius, size.y - radius * 2}, color);
+}
+
+funcdef void
+draw_capsule(vec2 pos, vec2 size, u32 color)
+{
+	f32 radius = Min(size.x, size.y) * 0.5f;
+
+	if (size.x >= size.y) {
+		draw_quad({pos.x, pos.y}, {radius, size.y}, color, 0, {}, {}, {-128, -128}, {0, 127});
+		draw_quad({pos.x + radius, pos.y}, {size.x - size.y, size.y}, color);
+		draw_quad({pos.x + size.x - radius, pos.y}, {radius, size.y}, color, 0, {}, {}, {0, 127}, {127, -128});
+	}
+	else {
+		draw_quad({pos.x, pos.y}, {size.x, radius}, color, 0, {}, {}, {-128, -128}, {127, 0});
+		draw_quad({pos.x, pos.y + radius}, {size.x, size.y - size.x}, color);
+		draw_quad({pos.x, pos.y + size.y - radius}, {size.x, radius}, color, 0, {}, {}, {127, 0}, {-128, -128});
+	}
 }
 
 funcdef f32

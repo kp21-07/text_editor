@@ -13,10 +13,9 @@ struct Color {
 	global const u32 dim         = Hex(0x3E4451FF);
 
 	global const u32 accent      = Hex(0x7A9E9FFF);
-	global const u32 cursor      = Hex(0xC7BEAFAA);
+	global const u32 cursor      = Hex(0x4FA38CFF);
 };
 
-const f32 FONT_HEIGHT = 32.0f;
-
+const f32 FONT_HEIGHT = 24.0f;
 
 #endif

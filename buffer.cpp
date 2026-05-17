@@ -1,58 +1,10 @@
 #include "editor.h"
 
 funcdef void
-buffer__build_line_ends(Buffer *buffer)
+buffer_make(Buffer *buffer, bytes data, Slice<Line> line_table)
 {
-	buffer->line_ends.len = 0;
-
-	List<u8> data = buffer->data;
-
-	if (data.len == 0) {
-		append(&buffer->line_ends, (u64) 0);
-		return;
-	}
-
-	for (u64 i = 0; i < data.len; ++i) {
-		if (data[i] == '\n') {
-			append(&buffer->line_ends, i + 1);
-		}
-	}
-
-	if (buffer->line_ends.len == 0 || buffer->line_ends[buffer->line_ends.len - 1] != data.len)
-	{
-		append(&buffer->line_ends, data.len);
-	}
-}
-
-funcdef u64
-buffer__line_index_for_offset(Buffer *buffer, u64 offset)
-{
-    List<u64> le = buffer->line_ends;
-    u64 lo = 0;
-    u64 hi = le.len;
-
-    while (lo < hi) {
-        u64 mid = lo + (hi - lo) / 2;
-        if (le[mid] <= offset)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    return lo;
-}
-
-funcdef u64
-buffer__line_start(Buffer *buffer, u64 line)
-{
-    if (line == 0) return 0;
-    return buffer->line_ends[line - 1];
-}
-
-funcdef void
-buffer_make(Buffer *buffer, bytes data, Slice<u64> line_table)
-{
-	buffer->data = list_from_backing_buffer(data);
-	buffer->line_ends = list_from_backing_buffer(line_table);
+	buffer->data = list_from_buffer(data);
+	buffer->lines = list_from_buffer(line_table);
 	buffer->cursor = 0;
 }
 
@@ -85,9 +37,8 @@ buffer_insert(Buffer *buffer, string s, Overflow *overflow)
 	insert_slice(&buffer->data, buffer->cursor, insert_data);
 
 	buffer->cursor += s.len;
-	buffer->last_cursor = buffer->cursor;
 
-	buffer__build_line_ends(buffer);
+	// buffer__build_line_ends(buffer);
 }
 
 funcdef void
@@ -120,13 +71,11 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
 			case Direction_Up:
 			case Direction_Down: {
 				int delta = 0;
-
 				if (dir == Direction_Up) {
 					delta = -1;
 				} else {
 					delta = +1;
 				}
-				
 			}break;
 
 			default:
@@ -166,8 +115,7 @@ buffer_delete(Buffer *buffer, u64 count)
 
 	buf->len -= (end - start);
 
-	buffer->last_cursor = buffer->cursor;
-	buffer__build_line_ends(buffer);
+	// buffer__build_line_ends(buffer);
 }
 
 funcdef Slice<string>

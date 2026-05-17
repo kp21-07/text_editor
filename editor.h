@@ -7,6 +7,7 @@
 
 #define force_inline inline __attribute__((always_inline))
 
+#include <math.h>
 #include <stdint.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -67,7 +68,7 @@ generic(T) struct List {
 };
 
 generic(T) force_inline List<T>
-list_from_backing_buffer(Slice<T> buff)
+list_from_buffer(Slice<T> buff)
 {
 	return List<T> {
 		.raw = buff.raw,
@@ -152,11 +153,17 @@ align_up_power_2(u64 val, u64 alignment) {
 
 struct vec2 { f32 x, y; };
 struct ivec2 { s32 x, y; };
+struct vec4 { f32 x, y, z, w; };
 
 struct Rect {
 	vec2 from;
 	vec2 size;
 };
+
+force_inline f32
+smooth_move(f32 curr, f32 target, f32 sharpness, f32 dt) {
+	return target + (curr - target) * expf(-sharpness * dt);
+}
 
 //
 // alloc.cpp
@@ -228,26 +235,40 @@ funcdef Render_Clip graphics_pop_clip();
 funcdef vec2 graphics_measure_text(string s);
 funcdef f32 graphics_char_width(rune c);
 
-funcdef void draw_quad(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF, u32 texture = 0, vec2 uv0 = {0,0}, vec2 vec1 = {1,1});
+funcdef void draw_quad(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF, u16 texture = 0, vec2 uv0 = {0,0}, vec2 vec1 = {1,1}, ivec2 circ0 = {0}, ivec2 circ1 = {0});
 funcdef vec2 draw_text(string s, vec2 start_pos, u32 color = 0xFFFFFFFF);
+funcdef void draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color = 0xFFFFFFFF);
+funcdef void draw_capsule(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF);
 
 //
 // platform.cpp
 //
 
+struct Time_Duration {
+	f64 seconds;
+	f64 milliseconds;
+	f64 microseconds;
+};
+
 funcdef bytes platform_load_entire_file(string path, Arena *allocator);
+
+funcdef u64 platform_time_now();
+funcdef Time_Duration platform_time_diff(u64 start, u64 end);
 
 //
 // buffer.cpp
 //
 
+struct Line {
+	u64 begin;
+};
+
 struct Buffer 
 {
 	List<u8> data;
-	List<u64> line_ends;
+	List<Line> lines;
 
 	u64 cursor;
-	u64 last_cursor;
 };
 
 struct Overflow
@@ -256,14 +277,14 @@ struct Overflow
 	u64 line_count;
 };
 
-enum Direction : u32 {
+enum Direction {
 	Direction_Right,
 	Direction_Left,
 	Direction_Up,
 	Direction_Down,
 };
 
-funcdef void buffer_make(Buffer *buffer, bytes data, Slice<u64> line_table);
+funcdef void buffer_make(Buffer *buffer, bytes data, Slice<Line> line_table);
 funcdef void buffer_insert(Buffer *buffer, string s, Overflow *overflow = nullptr);
 funcdef void buffer_delete(Buffer *buffer, u64 count);
 funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir);
