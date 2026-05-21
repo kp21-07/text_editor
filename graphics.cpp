@@ -31,11 +31,17 @@ enum : u16 {
 	Texture_Count
 };
 
+enum : u8 {
+	Draw_Layer_Base,
+	Draw_Layer_Popup,
+};
+
 struct Vertex {
-	struct { u16 x, y; } pos;
+	struct { s16 x, y; } pos;
 	struct { u16 u, v; } uv;   // normalized [0, MAX_U16] maps to [0.0, 1.0]
 	u32 color;
-	u16 tex_id;
+	u8 tex_id;
+	u8 draw_layer;
 	struct { s8 x, y; } circle; 
 	struct { u16 x0, y0, x1, y1; } clip;
 };
@@ -47,6 +53,7 @@ global struct {
 
 	List<Vertex> vertices;
 	List<u16>    indices;
+	u8 draw_layer;
 
 	u32 vao, vbo, ebo;
 	u32 program;
@@ -109,6 +116,8 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 		return;
 	}
 
+	gfx.draw_layer = Draw_Layer_Base;
+
 	////////////// opengl renderer setup //////////////
 
 	auto vertex_buf  = alloc_slice(persist, Vertex, MAX_VERTICES);
@@ -130,7 +139,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, MAX_VERTICES * sizeof(u16), NULL, GL_DYNAMIC_DRAW);
 
 	glEnableVertexAttribArray(0);
-	glVertexAttribPointer(0, 2, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, pos));
+	glVertexAttribPointer(0, 2, GL_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, pos));
 
 	glEnableVertexAttribArray(1);
 	glVertexAttribPointer(1, 2, GL_UNSIGNED_SHORT, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, uv));
@@ -139,13 +148,16 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, color));
 
 	glEnableVertexAttribArray(3);
-	glVertexAttribIPointer(3, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
+	glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
 
 	glEnableVertexAttribArray(4);
-	glVertexAttribPointer(4, 2, GL_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, circle));
+	glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, draw_layer));
 
 	glEnableVertexAttribArray(5);
-	glVertexAttribPointer(5, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
+	glVertexAttribPointer(5, 2, GL_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, circle));
+
+	glEnableVertexAttribArray(6);
+	glVertexAttribPointer(6, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
 
 	{
 		string vs = S(
@@ -154,8 +166,9 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"layout (location = 1) in vec2  a_uv;"
 			"layout (location = 2) in vec4  a_color;"
 			"layout (location = 3) in uint  a_texid;"
-			"layout (location = 4) in vec2  a_circ;"
-			"layout (location = 5) in vec4  a_clip;"
+			"layout (location = 4) in float a_layer;"
+			"layout (location = 5) in vec2  a_circ;"
+			"layout (location = 6) in vec4  a_clip;"
 			"out vec4       v_color;"
 			"out vec2       v_uv;"
 			"out vec2       v_pos;"
@@ -172,7 +185,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"	v_clip   = a_clip;"
 			"   vec2 ndc = (a_pos / u_resolution) * 2.0 - 1.0;"
 			"   ndc.y    = -ndc.y;"
-			"   gl_Position = vec4(ndc, 0.0, 1.0);"
+			"   gl_Position = vec4(ndc, -a_layer, 1.0);"
 			"}"
 		);
 
@@ -278,6 +291,9 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 		arena_free(persist, arena_mark);
 	}
 
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -303,7 +319,7 @@ graphics_update(u32 color, Frame_Input *input)
 	f32 r = ((color >>  0) & 0xFF) / 255.0f;
 
 	glClearColor(r, g, b, a);
-	glClear(GL_COLOR_BUFFER_BIT);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	glBindVertexArray(gfx.vao);
 
@@ -338,13 +354,15 @@ graphics_update(u32 color, Frame_Input *input)
 					case RGFW_keyBackSpace: input->key_flags |= key_Backspace; break;
 					case RGFW_keyDelete: input->key_flags |= key_Delete; break;
 					case RGFW_keyEscape: input->key_flags |= key_Escape; break;
-					case RGFW_keyReturn: input->character = '\n';
+					case RGFW_keyReturn: input->character = '\n'; break;
+					case RGFW_keyTab: input->character = '\t'; break;
 				}
 				break;
 			}
 
 			case RGFW_keyChar: {
 				RGFW_keyCharEvent k = event.keyChar;
+				if (!unicode_visual_rune(k.value)) break;
 				input->character = k.value;
 				break;
 			}
@@ -361,8 +379,17 @@ rects_overlap(f32 ax, f32 ay, f32 aw, f32 ah, f32 bx, f32 by, f32 bw, f32 bh)
 	return !(ax + aw <= bx || ay + ah <= by || ax >= bx + bw || ay >= by + bh);
 }
 
+
+funcdef u8
+draw_push_layer(u8 new_layer)
+{
+	u8 old = gfx.draw_layer;
+	gfx.draw_layer = new_layer;
+	return old;
+}
+
 funcdef void
-draw_quad(vec2 pos, vec2 size, u32 color, u16 texture, vec2 uv0, vec2 uv1, ivec2 circ0, ivec2 circ1)
+draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 circ0, ivec2 circ1)
 {
 	s8 cr0_x = (s8) circ0.x;
 	s8 cr0_y = (s8) circ0.y;
@@ -389,10 +416,10 @@ draw_quad(vec2 pos, vec2 size, u32 color, u16 texture, vec2 uv0, vec2 uv1, ivec2
 	u16 c2 = (u16)(clip.from.x + clip.size.x);
 	u16 c3 = (u16)(clip.from.y + clip.size.y);
 
-	append(&gfx.vertices, Vertex { { (u16)x,       (u16)y }, { u0, v0 }, color, texture, {cr0_x, cr0_y}, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (u16)(x + w), (u16)y }, { u1, v0 }, color, texture, {cr1_x, cr0_y}, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (u16)(x + w), (u16)(y + h) }, { u1, v1 }, color, texture, {cr1_x, cr1_y}, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (u16)x,       (u16)(y + h) }, { u0, v1 }, color, texture, {cr0_x, cr1_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (s16)x,       (s16)y }, { u0, v0 }, color, texture, gfx.draw_layer, {cr0_x, cr0_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (s16)(x + w), (s16)y }, { u1, v0 }, color, texture, gfx.draw_layer, {cr1_x, cr0_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (s16)(x + w), (s16)(y + h) }, { u1, v1 }, color, texture, gfx.draw_layer, {cr1_x, cr1_y}, { c0, c1, c2, c3 } });
+	append(&gfx.vertices, Vertex { { (s16)x,       (s16)(y + h) }, { u0, v1 }, color, texture, gfx.draw_layer, {cr0_x, cr1_y}, { c0, c1, c2, c3 } });
 
 	append(&gfx.indices, (u16)(i + 0));
 	append(&gfx.indices, (u16)(i + 1));

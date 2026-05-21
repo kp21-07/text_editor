@@ -10,7 +10,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <assert.h>
-#include <stdlib.h>
 #include <string.h>
 
 typedef uint8_t  u8;
@@ -138,13 +137,37 @@ digit_count_u64(u64 n) {
     return count;
 }
 
+/////////////////////////////////////////////////////////////////////////////////////
+// ~geb: cursed defer from gb.h
+
+template <typename T> struct RemoveReference       { typedef T Type; };
+template <typename T> struct RemoveReference<T &>  { typedef T Type; };
+template <typename T> struct RemoveReference<T &&> { typedef T Type; };
+
+template <typename T> inline T &&forward(typename RemoveReference<T>::Type &t)  { return static_cast<T &&>(t); }
+template <typename T> inline T &&forward(typename RemoveReference<T>::Type &&t) { return static_cast<T &&>(t); }
+template <typename T> inline T &&move   (T &&t)                                 { return static_cast<typename RemoveReference<T>::Type &&>(t); }
+
+template <typename F>
+struct DeferImpl {
+    F f;
+    DeferImpl(F &&f) : f(forward<F>(f)) {}
+    ~DeferImpl() { f(); }
+};
+template <typename F> DeferImpl<F> defer_func(F &&f) { return DeferImpl<F>(forward<F>(f)); }
+
+#define TOKEN_PASTE(a, b) a##b
+#define DEFER_NAME(base, line) TOKEN_PASTE(base, line)
+#define defer(code) auto DEFER_NAME(_defer_, __LINE__) = defer_func([&]() { code; })
+
+/////////////////////////////////////////////////////////////////////////////////////
+
 typedef u32 rune;
 typedef Slice<u8> bytes;
 typedef Slice<const u8> string;
 #define S(x) { .raw = (const u8 *) x, .len = (u64) (sizeof(x) - 1) }
 #define s_fmt(s) (int) s.len, (char *) s.raw
 
-#define utf8_continuation_byte(b) (((b) & 0xC0) == 0x80)
 
 force_inline string
 string_from_bytes(bytes b) {
@@ -178,28 +201,24 @@ smooth_move(f32 curr, f32 target, f32 sharpness, f32 dt) {
 //
 
 struct Arena {
-	bytes data;
-	u64   used; 
+	bytes reserved;
+	u64   committed;
+	u64   used;
+
+	// bytes data;
+	// u64   used; 
 };
 
 #define KB(x) ((u64) x << 10)
 #define MB(x) ((u64) x << 20)
 #define GB(x) ((u64) x << 30)
 
-funcdef void arena_make(Arena *arena, bytes buffer);
+funcdef Arena *arena_new(u64 reserve);
 funcdef void *arena_alloc(Arena *arena, u64 size, u64 alignment = alignof(void *));
-funcdef void arena_free(Arena *arena, u64 loc = 0);
+funcdef void arena_free(Arena *arena, u64 loc = sizeof(Arena), bool rollback = false);
 
 #define alloc_struct(_arr, _T) (_T *) arena_alloc((_arr), sizeof(_T), alignof(_T))
 #define alloc_slice(_arr, _T, _c) Slice<_T> { (_T *) arena_alloc((_arr), sizeof(_T) * (_c), alignof(_T)), (u64) (_c) }
-
-force_inline bytes
-malloc_bytes(u64 size) {
-	return bytes {
-		(u8 *) malloc(size),
-		size
-	};
-}
 
 #define Byte_Swap_U32(x) ((u32) __builtin_bswap32(x))
 #define Hex(x) Byte_Swap_U32(x)
@@ -211,8 +230,13 @@ malloc_bytes(u64 size) {
 funcdef string string_concat(string a, string b, Arena *allocator);
 funcdef Slice<string> string_as_lines(string parent, Arena *allocator);
 funcdef string string_format(Arena *arena, const char *fmt, ...);
-funcdef rune utf8_decode(string slice, int *width);
-funcdef int utf8_character_width(u8 first_byte);
+
+funcdef rune   utf8_decode(string slice, int *width);
+funcdef string utf8_encode(rune cp, Arena *arena);
+funcdef int    utf8_character_width(u8 first_byte);
+#define        utf8_continuation_byte(b) (((b) & 0xC0) == 0x80)
+
+funcdef bool unicode_visual_rune(rune r);
 
 //
 // graphics.cpp
@@ -243,10 +267,13 @@ funcdef Render_Clip graphics_pop_clip();
 funcdef vec2 graphics_measure_text(string s);
 funcdef f32 graphics_char_width(rune c);
 
-funcdef void draw_quad(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF, u16 texture = 0, vec2 uv0 = {0,0}, vec2 vec1 = {1,1}, ivec2 circ0 = {0}, ivec2 circ1 = {0});
+funcdef u8 draw_push_layer(u8 new_layer);
+funcdef void draw_quad(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF, u8 texture = 0, vec2 uv0 = {0,0}, vec2 vec1 = {1,1}, ivec2 circ0 = {0}, ivec2 circ1 = {0});
 funcdef vec2 draw_text(string s, vec2 start_pos, u32 color = 0xFFFFFFFF);
 funcdef void draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color = 0xFFFFFFFF);
 funcdef void draw_capsule(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF);
+
+#define push_draw_layer_scoped(layer) for(u8 _old_layer = draw_push_layer(layer), _i = 0; _i == 0; draw_push_layer(_old_layer), _i++)
 
 //
 // platform.cpp
@@ -262,6 +289,11 @@ funcdef bytes platform_load_entire_file(string path, Arena *allocator);
 
 funcdef u64 platform_time_now();
 funcdef Time_Duration platform_time_diff(u64 start, u64 end);
+
+funcdef void *platform_mem_reserve(u64 size);
+funcdef bool  platform_mem_commit(void *ptr, u64 size);
+funcdef void  platform_mem_decommit(void *ptr, u64 size);
+funcdef void  platform_mem_release(void *ptr, u64 size);
 
 //
 // buffer.cpp
@@ -294,7 +326,7 @@ enum Direction {
 
 funcdef void buffer_make(Buffer *buffer, bytes data, Slice<Line> line_table);
 funcdef void buffer_insert(Buffer *buffer, string s, Overflow *overflow = nullptr);
-funcdef void buffer_delete(Buffer *buffer, u64 count);
+funcdef void buffer_delete(Buffer *buffer, u64 count, Direction dir);
 funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir);
 funcdef Slice<string> buffer_as_lines(Buffer *buffer, Arena *allocator);
 
@@ -323,9 +355,7 @@ struct UI_Draw {
 
 struct UI_State {
 	Arena *arena;
-
 	Arena *build_arena;
-
 	UI_Box *root;
 };
 

@@ -37,6 +37,28 @@ utf8_character_width(u8 first_byte)
 	return widths[first_byte];
 }
 
+funcdef bool
+unicode_visual_rune(rune r)
+{
+	/* ASCII controls */
+	if (r < 0x20 || r == 0x7F)
+		return false;
+
+	/* C1 controls */
+	if (r >= 0x80 && r <= 0x9F)
+		return false;
+
+	/* surrogate halves */
+	if (r >= 0xD800 && r <= 0xDFFF)
+		return false;
+
+	/* invalid Unicode range */
+	if (r > 0x10FFFF)
+		return false;
+
+	return true;
+}
+
 
 funcdef string
 string_concat(string a, string b, Arena *allocator)
@@ -143,6 +165,50 @@ utf8_decode(string slice, int *width)
 invalid:
 	if (width) *width = 1;
 	return 0xFFFD;
+}
+
+funcdef string
+utf8_encode(rune cp, Arena *arena)
+{
+	bytes out = alloc_slice(arena, u8, 4);
+
+	if (cp > 0x10FFFF ||
+	    (cp >= 0xD800 && cp <= 0xDFFF))
+	{
+		cp = 0xFFFD;
+	}
+
+	/* 1 byte */
+	if (cp <= 0x7F)
+	{
+		out[0] = (u8)cp;
+		return slice(string_from_bytes(out), 0, 1);
+	}
+
+	/* 2 byte */
+	if (cp <= 0x7FF)
+	{
+		out[0] = 0xC0 | ((cp >> 6) & 0x1F);
+		out[1] = 0x80 | ((cp >> 0) & 0x3F);
+		return slice(string_from_bytes(out), 0, 2);
+	}
+
+	/* 3 byte */
+	if (cp <= 0xFFFF)
+	{
+		out[0] = 0xE0 | ((cp >> 12) & 0x0F);
+		out[1] = 0x80 | ((cp >> 6 ) & 0x3F);
+		out[2] = 0x80 | ((cp >> 0 ) & 0x3F);
+		return slice(string_from_bytes(out), 0, 3);
+	}
+
+	/* 4 byte */
+	out[0] = 0xF0 | ((cp >> 18) & 0x07);
+	out[1] = 0x80 | ((cp >> 12) & 0x3F);
+	out[2] = 0x80 | ((cp >> 6 ) & 0x3F);
+	out[3] = 0x80 | ((cp >> 0 ) & 0x3F);
+
+	return slice(string_from_bytes(out), 0, 4);
 }
 
 

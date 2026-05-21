@@ -20,19 +20,123 @@ const string MODE_STRING[Mode_Count] = {
 };
 
 global struct {
+	Arena *persist;
+	Arena *transient;
+
 	Editor_Mode mode;
+
 	List<Buffer> buffers;
-	List<u8> cmd_buffer;
+
 	vec2 cursor_pos;
+
 	f32 delta_time;
+	f32 time;
 } editor;
 
-funcdef void
-draw_buffer_to_rect(Buffer *buffer, Rect region, Arena *transient)
+funcdef string
+command_palette_interface(Frame_Input input)
 {
+	u8 input_char = (u8) input.character;
+	local_persist u8 cmd_buf[128];
+	local_persist List<u8> cmd_string = {
+		cmd_buf, 0, sizeof(cmd_buf)
+	};
+
+	u32 key_flags = input.key_flags;
+
+	if (key_flags & key_Escape) {
+		editor.mode = Mode_Normal;
+		clear(&cmd_string);
+		return {0};
+	}
+	else if (key_flags & (key_Backspace | key_Delete)) {
+		if (cmd_string.len > 0) cmd_string.len -= 1;	
+	} else if (input_char) {
+		if (input_char == '\n') {
+			bytes result = slice_from_list(cmd_string);
+			printf("%.*s\n", s_fmt(result));
+			editor.mode = Mode_Normal;
+			clear(&cmd_string);
+
+			return string { result.raw, result.len };
+		}
+		else if (input_char == '\t') {
+			// TODO: autocompletion
+		}
+
+		if (cmd_string.len < cmd_string.capacity)
+			append(&cmd_string, input_char);
+	}
+
+	/////////////////////////////////////////////////
+	// ~geb: render	
+
+	push_draw_layer_scoped(Draw_Layer_Popup) {
+		const f32 panel_width = gfx.win->w * 0.3f;
+		const f32 panel_height = gfx.line_height;
+
+		f32 x0 = (f32) (gfx.win->w - panel_width) * 0.5f;
+		f32 y0 = 32.0f;
+
+		draw_quad_rounded({x0 - 2, y0 - 2}, {panel_width + 4, panel_height + 4}, 5, Color::cursor);
+		draw_quad_rounded({x0 - 1, y0 - 1}, {panel_width + 2, panel_height + 2}, 5, Color::bg);
+
+		Rect clip = {
+			{x0, y0}, {panel_width, panel_height}
+		};
+
+		graphics_push_clip(clip, editor.transient);
+		defer(graphics_pop_clip());
+
+		string str = {
+			.raw = cmd_string.raw,
+			.len = cmd_string.len
+		};
+
+		str = string_format(editor.transient, ":%.*s", s_fmt(cmd_string));
+
+		vec2 text_pos = {x0, y0};
+		vec2 size = draw_text(str, text_pos, Color::cursor);
+		text_pos.x += size.x;
+
+		draw_quad(text_pos,  {2, gfx.line_height}, Color::cursor);
+	}
+
+	return {0};
+
+	u8 layer;
+}
+
+funcdef void
+draw_buffer_view(Buffer *buffer, Rect region) 
+{
+	local_persist f32 space_width = graphics_char_width(' ');
+
+
 	draw_quad(region.from, region.size, Color::bg);
 
-	graphics_push_clip(region, transient);
+	graphics_push_clip(region, editor.transient);
+	defer(graphics_pop_clip());
+
+	f32 size_x = region.size.x;
+	f32 size_y = region.size.y;
+
+	Slice<string> lines = buffer_as_lines(buffer, editor.transient);
+
+	for(u64 i=0; i<lines.len; ++i) {
+		string line = lines[i];
+	
+	}
+
+	
+}
+
+funcdef void
+draw_buffer_to_rect(Buffer *buffer, Rect region) {
+	draw_quad(region.from, region.size, Color::bg);
+
+	graphics_push_clip(region, editor.transient);
+	defer(graphics_pop_clip());
 
 	local_persist f32 space_width = graphics_char_width(' ');
 
@@ -41,7 +145,7 @@ draw_buffer_to_rect(Buffer *buffer, Rect region, Arena *transient)
 	f32 region_width = region.size.x;
 	f32 region_height = region.size.y;
 
-	Slice<string> lines = buffer_as_lines(buffer, transient);
+	Slice<string> lines = buffer_as_lines(buffer, editor.transient);
 
 	for (u64 i=0; i<lines.len; ++i) {
 		string line = lines[i];
@@ -56,7 +160,7 @@ draw_buffer_to_rect(Buffer *buffer, Rect region, Arena *transient)
 			draw_quad({region.from.x, y + 2}, { region_width, gfx.line_height - 4}, Color::bg);
 		}
 
-		string number_string = string_format(transient, "%zu", i + 1);
+		string number_string = string_format(editor.transient, "%zu", i + 1);
 		draw_text(number_string, { region.from.x, y }, on_cursor ? Color::accent : Color::dim);
 
 		f32 x = region.from.x + graphics_char_width('0') * (1 + Max(digit_count_u64(lines.len), 2));
@@ -91,48 +195,44 @@ draw_buffer_to_rect(Buffer *buffer, Rect region, Arena *transient)
 		y += gfx.line_height;
 		if (y > region.from.y + region.size.y) break;
 	}
-	
-	graphics_pop_clip();
 }
 
 int main()
 {
-	Arena persist = {};
-	arena_make(&persist, malloc_bytes(MB(32)));
+	editor.persist = arena_new(GB(1));
+	editor.transient = arena_new(MB(32));
     
-	Arena transient = {};
-	arena_make(&transient, malloc_bytes(MB(32)));
-    
-	graphics_init("text editor", 1280, 800, &persist);
+	graphics_init("text editor", 1280, 800, editor.persist);
     
 	{
-		auto buf = alloc_slice(&persist, Buffer, 16);
+		auto buf = alloc_slice(editor.persist, Buffer, 16);
 		editor.buffers = list_from_buffer(buf);
 		append(&editor.buffers, {});
-        
-		auto cmd_buf = alloc_slice(&persist, u8, 128);
-		editor.cmd_buffer = list_from_buffer(cmd_buf);
 	}
     
 	auto buf = &editor.buffers[0];
     
 	buffer_make(
 		buf,
-		alloc_slice(&persist, u8, KB(512)),
-		alloc_slice(&persist, Line, 2048)
+		alloc_slice(editor.persist, u8, KB(512)),
+		alloc_slice(editor.persist, Line, 2048)
 	);
 
 	Frame_Input input = {};
 	u64 last_frame_time = platform_time_now();
 	while(graphics_update(Hex(0x000000FF), &input))
 	{
+		defer(arena_free(editor.transient));
+
 		u64 curr_time = platform_time_now();
 		editor.delta_time = (f32) platform_time_diff(last_frame_time, curr_time).seconds;
+		editor.time += editor.delta_time;
 		last_frame_time = curr_time;
 
 		rune c = input.character;
 
-		graphics_push_clip({ {0, 0}, {(f32) gfx.win->w , (f32) gfx.win->h }}, &transient);
+		graphics_push_clip({ {0, 0}, {(f32) gfx.win->w , (f32) gfx.win->h }}, editor.transient);
+		defer(graphics_pop_clip());
         
 		switch (editor.mode) {
 			case Mode_Normal: {
@@ -147,91 +247,30 @@ int main()
 					}
 				}
 			} break;
-            
+
 			case Mode_Insert: {
-				if (input.key_flags & key_Escape) editor.mode = Mode_Normal;
-				else if (input.key_flags & key_Delete) buffer_delete(buf, 1);
-				else if (input.key_flags & key_Backspace)  {
-					if (buf->cursor > 0) { 
-						buffer_move_cursor(buf, 1, Direction_Left);
-						buffer_delete(buf, 1);
-					}
-				}
+				if      (input.key_flags & key_Escape) editor.mode = Mode_Normal;
+				else if (input.key_flags & key_Delete) buffer_delete(buf, 1, Direction_Right);
+				else if (input.key_flags & key_Backspace) buffer_delete(buf, 1, Direction_Left);
 				else if (c) {
-					string input = {
-						.raw = (const u8 *)&c,
-						.len = 1
-					};
+					string input = utf8_encode(c, editor.transient);
 					buffer_insert(buf, input);
 				}
 			} break;
             
-			case Mode_Command: {
-				if (input.key_flags & key_Escape) {
-					editor.mode = Mode_Normal;
-					clear(&editor.cmd_buffer);
-				}
-				else if(input.key_flags & (key_Backspace | key_Delete)) {
-					if (editor.cmd_buffer.len > 0)
-						editor.cmd_buffer.len -= 1;
-				}
-				else if(c) {
-					if (c == '\n') {
-						string cmd_string = {
-							.raw = editor.cmd_buffer.raw,
-							.len = editor.cmd_buffer.len
-						};
+			case Mode_Command:
+				command_palette_interface(input);
+				break;
 
-						printf("%.*s\n", s_fmt(cmd_string));
-						editor.mode = Mode_Normal;
-						clear(&editor.cmd_buffer);
-						break;
-					}
-                    
-					append(&editor.cmd_buffer, (u8) c);
-				}
-			} break;
-			default: break;
-		}
-      
-		draw_buffer_to_rect(buf, {{0, 0}, {(f32) gfx.win->w, (f32)gfx.win->h}}, &transient);
+			default:
+				break;
+		}    
+
+		draw_buffer_to_rect(buf, {{0, 0}, {(f32) gfx.win->w, (f32)gfx.win->h}});
 
 		draw_quad({0, gfx.win->h - gfx.line_height}, {(f32) gfx.win->w, gfx.line_height}, Color::bg_alt);
 
-		string mode_string = string_format(&transient, "-- %.*s --", s_fmt(MODE_STRING[editor.mode]));
+		string mode_string = string_format(editor.transient, "-- %.*s --", s_fmt(MODE_STRING[editor.mode]));
 		draw_text(mode_string, {0, gfx.win->h - gfx.line_height}, Color::accent);
-
-		if (editor.mode == Mode_Command) {
-			const f32 panel_width = gfx.win->w * 0.3f;
-			const f32 panel_height = gfx.line_height;
-
-			f32 x0 = (f32) (gfx.win->w - panel_width) * 0.5f;
-			f32 y0 = 32.0f;
-
-			draw_quad_rounded({x0 - 2, y0 - 2}, {panel_width + 4, panel_height + 4}, 5, Color::cursor);
-			draw_quad_rounded({x0 - 1, y0 - 1}, {panel_width + 2, panel_height + 2}, 5, Color::bg);
-
-			Rect clip = {
-				{x0, y0}, {panel_width, panel_height}
-			};
-			graphics_push_clip(clip, &transient);
-
-			string cmd_string = {
-				.raw = editor.cmd_buffer.raw,
-				.len = editor.cmd_buffer.len
-			};
-
-			cmd_string = string_format(&transient, ":%.*s", s_fmt(cmd_string));
-
-			vec2 text_pos = {x0, y0};
-			vec2 size = draw_text(cmd_string, text_pos, Color::cursor);
-			text_pos.x += size.x;
-
-			draw_quad(text_pos,  {2, gfx.line_height}, Color::cursor);
-
-			graphics_pop_clip();
-		}
-        
-		arena_free(&transient);
-	}
+    }
 }

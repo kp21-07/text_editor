@@ -93,37 +93,66 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
 }
 
 funcdef void
-buffer_delete(Buffer *buffer, u64 count)
+buffer_delete(Buffer *buffer, u64 count, Direction direction)
 {
 	auto buf = &buffer->data;
 
-	if (count == 0) return;
-	if (buffer->cursor >= buf->len) return;
+	if (count == 0 || buf->len == 0)
+		return;
 
 	u64 start = buffer->cursor;
-	u64 end   = start;
+	u64 end   = buffer->cursor;
 
-	while (count && end < buf->len)
+	if (direction == Direction_Right)
 	{
-		end += 1;
+		if (start >= buf->len)
+			return;
 
-		while (end < buf->len && utf8_continuation_byte((*buf)[end]))
+		while (count && end < buf->len)
 		{
 			end += 1;
+
+			while (end < buf->len &&
+			       utf8_continuation_byte((*buf)[end]))
+			{
+				end += 1;
+			}
+
+			count -= 1;
+		}
+	}
+	else
+	{
+		if (start == 0)
+			return;
+
+		end = start;
+
+		while (count && start > 0)
+		{
+			start -= 1;
+
+			while (start > 0 &&
+			       utf8_continuation_byte((*buf)[start]))
+			{
+				start -= 1;
+			}
+
+			count -= 1;
 		}
 
-		count -= 1;
+		buffer->cursor = start;
 	}
 
-	if (end <= start) return;
+	if (end <= start)
+		return;
 
 	memmove(buf->raw + start,
 	        buf->raw + end,
 	        buf->len - end);
 
 	buf->len -= (end - start);
-
-	// buffer__build_line_ends(buffer);
+	buf->raw[buf->len] = 0;
 }
 
 funcdef Slice<string>
