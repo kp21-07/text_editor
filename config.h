@@ -6,6 +6,8 @@
 ///////////////////////////////
 // ~geb: theme
 
+const f32 FONT_HEIGHT = 24.0f;
+
 struct Color {
 	global const u32 bg          = Hex(0x0F1919FF);
 	global const u32 bg_alt      = Hex(0x102121FF);
@@ -16,6 +18,5 @@ struct Color {
 	global const u32 cursor      = Hex(0x4FA38CFF);
 };
 
-const f32 FONT_HEIGHT = 24.0f;
 
 #endif

@@ -133,10 +133,10 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	glBindVertexArray(gfx.vao);
 
 	glBindBuffer(GL_ARRAY_BUFFER, gfx.vbo);
-	glBufferData(GL_ARRAY_BUFFER, MAX_VERTICES * sizeof(Vertex), NULL, GL_DYNAMIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, MAX_VERTICES * sizeof(Vertex), nullptr, GL_DYNAMIC_DRAW);
 
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx.ebo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, MAX_VERTICES * sizeof(u16), NULL, GL_DYNAMIC_DRAW);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, MAX_VERTICES * sizeof(u16), nullptr, GL_DYNAMIC_DRAW);
 
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(0, 2, GL_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, pos));
@@ -307,39 +307,13 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 }
 
 funcdef bool
-graphics_update(u32 color, Frame_Input *input)
+graphics_update(Frame_Input *input)
 {
-	*input = {};	
-
-	if (RGFW_window_shouldClose(gfx.win)) return false;
-
-	f32 a = ((color >> 24) & 0xFF) / 255.0f;
-	f32 b = ((color >> 16) & 0xFF) / 255.0f;
-	f32 g = ((color >>  8) & 0xFF) / 255.0f;
-	f32 r = ((color >>  0) & 0xFF) / 255.0f;
-
-	glClearColor(r, g, b, a);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-	glBindVertexArray(gfx.vao);
-
-	glBindBuffer(GL_ARRAY_BUFFER, gfx.vbo);
-	glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx.vertices.len * sizeof(Vertex)), gfx.vertices.raw);
-
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx.ebo);
-	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx.indices.len * sizeof(u16)), gfx.indices.raw);
-
-	glUseProgram(gfx.program);
-	glUniform2f(gfx.uniforms[Uniform_Resolution], (float)gfx.win->w, (float)gfx.win->h);
-
-	glDrawElements(GL_TRIANGLES, (GLsizei)gfx.indices.len, GL_UNSIGNED_SHORT, 0);
-
-	clear(&gfx.vertices);
-	clear(&gfx.indices);
-
 	RGFW_window_swapBuffers_OpenGL(gfx.win);
 
-	// RGFW_waitForEvent(-1);
+	if (RGFW_window_shouldClose(gfx.win)) return true;
+
+	RGFW_waitForEvent(-1);
 	RGFW_event event = {0};
 	while (RGFW_window_checkEvent(gfx.win, &event)) {
 		switch (event.type) {
@@ -369,7 +343,30 @@ graphics_update(u32 color, Frame_Input *input)
 		}
 	}
 
-	return true;
+	glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	return false;
+}
+
+funcdef void
+graphics_submit_draw()
+{
+	glBindVertexArray(gfx.vao);
+
+	glBindBuffer(GL_ARRAY_BUFFER, gfx.vbo);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx.vertices.len * sizeof(Vertex)), gfx.vertices.raw);
+
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx.ebo);
+	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx.indices.len * sizeof(u16)), gfx.indices.raw);
+
+	glUseProgram(gfx.program);
+	glUniform2f(gfx.uniforms[Uniform_Resolution], (float)gfx.win->w, (float)gfx.win->h);
+
+	glDrawElements(GL_TRIANGLES, (GLsizei)gfx.indices.len, GL_UNSIGNED_SHORT, 0);
+
+	clear(&gfx.vertices);
+	clear(&gfx.indices);
 }
 
 
@@ -391,6 +388,10 @@ draw_push_layer(u8 new_layer)
 funcdef void
 draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 circ0, ivec2 circ1)
 {
+	if (gfx.vertices.len + 4 > gfx.vertices.capacity || gfx.indices.len + 6 > gfx.indices.capacity) {
+		graphics_submit_draw();
+	}
+
 	s8 cr0_x = (s8) circ0.x;
 	s8 cr0_y = (s8) circ0.y;
 	s8 cr1_x = (s8) circ1.x;
@@ -434,62 +435,102 @@ draw_text(string s, vec2 start_pos, u32 color)
 {
 	f32 x = start_pos.x;
 	f32 y = start_pos.y + gfx.ascent;
-    
+
 	f32 max_x = x;
 	f32 min_y = y;
 	f32 max_y = y;
-    
+
+	const int TAB_WIDTH = 4;
+
+	u64 column = 0;
+
 	int width = 0;
 	for (int i = 0; i < (int)s.len; i += width) {
 		rune c = utf8_decode(slice(s, i, s.len), &width);
-        
+
 		if (c == '\n') {
 			x  = start_pos.x;
 			y += gfx.line_height;
-            
+
+			column = 0;
+
 			if (y > max_y) max_y = y;
 			continue;
 		}
-        
-		if (c == '\r') continue;
-        
+
+		if (c == '\r') {
+			continue;
+		}
+
 		if (c == '\t') {
-			for (int t = 0; t < 4; ++t) {
+			u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
+
+			for (u64 t = 0; t < spaces; ++t) {
 				stbtt_aligned_quad q;
-				stbtt_GetBakedQuad(gfx.baked_chars, 512, 512, ' ' - FIRST_CHAR, &x, &y, &q, 1);
+				stbtt_GetBakedQuad(
+					gfx.baked_chars,
+					512,
+					512,
+					' ' - FIRST_CHAR,
+					&x,
+					&y,
+					&q,
+					1
+				);
 			}
+
+			column += spaces;
+
 			if (x > max_x) max_x = x;
 			continue;
 		}
-        
+
 		bool invalid = false;
 		if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS) {
 			c = NUM_CHARS + FIRST_CHAR - 1;
 			invalid = true;
 		}
-        
+
 		stbtt_aligned_quad q;
-		stbtt_GetBakedQuad(gfx.baked_chars, 512, 512, (int)(c - FIRST_CHAR), &x, &y, &q, 1);
-        
+		stbtt_GetBakedQuad(
+			gfx.baked_chars,
+			512,
+			512,
+			(int)(c - FIRST_CHAR),
+			&x,
+			&y,
+			&q,
+			1
+		);
+
 		if (c != ' ') {
 			vec2 pos  = { q.x0, q.y0 };
 			vec2 dims = { q.x1 - q.x0, q.y1 - q.y0 };
 			vec2 uv0  = { q.s0, q.t0 };
 			vec2 uv1  = { q.s1, q.t1 };
-            
-			draw_quad(pos, dims, invalid ? 0xFF0000FF : color, Texture_Font, uv0, uv1);
-            
+
+			draw_quad(
+				pos,
+				dims,
+				invalid ? 0xFF0000FF : color,
+				Texture_Font,
+				uv0,
+				uv1
+			);
+
 			if (q.y0 < min_y) min_y = q.y0;
 			if (q.y1 > max_y) max_y = q.y1;
 		}
-        
+
+		column += 1;
+
 		if (x > max_x) max_x = x;
 	}
-    
+
 	vec2 result;
 	result.x = max_x - start_pos.x;
 	result.y = max_y - min_y;
-    
+
 	return result;
 }
 
@@ -535,28 +576,65 @@ graphics_char_width(rune c)
 funcdef vec2
 graphics_measure_text(string s)
 {
-    f32 x     = 0;
-    f32 max_x = 0;
-    f32 lines = 1;
-    int width = 0;
-    for (int i = 0; i < (int)s.len; i += width) {
-        rune c = utf8_decode(slice(s, i, s.len), &width);
-        if (c == '\n') {
-            if (x > max_x) max_x = x;
-            x = 0;
-            lines += 1;
-            continue;
-        }
-        if (c == '\r') continue;
-        if (c == '\t') {
-            x += graphics_char_width(' ') * 4;
-            if (x > max_x) max_x = x;
-            continue;
-        }
-        x += graphics_char_width(c);
-        if (x > max_x) max_x = x;
-    }
-    return { max_x, lines * gfx.line_height };
+	f32 x = 0;
+	f32 max_x = 0;
+
+	f32 lines = 1;
+
+	const u64 TAB_WIDTH = 4;
+
+	u64 column = 0;
+
+	int width = 0;
+
+	for (int i = 0; i < (int)s.len; i += width) {
+		rune c = utf8_decode(
+			slice(s, i, s.len),
+			&width
+		);
+
+		if (c == '\n') {
+			if (x > max_x) {
+				max_x = x;
+			}
+
+			x = 0;
+			column = 0;
+
+			lines += 1;
+			continue;
+		}
+
+		if (c == '\r') {
+			continue;
+		}
+
+		if (c == '\t') {
+			u64 spaces =
+				TAB_WIDTH - (column % TAB_WIDTH);
+
+			x += graphics_char_width(' ') * spaces;
+			column += spaces;
+
+			if (x > max_x) {
+				max_x = x;
+			}
+
+			continue;
+		}
+
+		x += graphics_char_width(c);
+		column += 1;
+
+		if (x > max_x) {
+			max_x = x;
+		}
+	}
+
+	return {
+		max_x,
+		lines * gfx.line_height
+	};
 }
 
 

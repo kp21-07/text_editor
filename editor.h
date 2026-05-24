@@ -30,6 +30,7 @@ static_assert(sizeof(f64) == 8, "float32 size missmatch");
 #define Min(a, b) ((a) < (b) ? (a) : (b))
 #define Max(a, b) ((a) > (b) ? (a) : (b))
 #define Range_Check(min, val, max) ((min) <= (val) && (val) <= (max))
+#define Clamp(val, min, max) ((val) < (min) ? (min) : ((val) > (max) ? (max) : (val)))
 
 #define generic(...) template<typename __VA_ARGS__>
 
@@ -50,8 +51,8 @@ slice(Slice<T> src, u64 begin, u64 end)
     assert(end <= src.len);
     assert(begin <= end);
     return Slice<T> {
-        .raw = src.raw + begin,
-        .len = end - begin
+        src.raw + begin,
+        end - begin
     };
 }
 
@@ -70,17 +71,17 @@ generic(T) force_inline List<T>
 list_from_buffer(Slice<T> buff)
 {
 	return List<T> {
-		.raw = buff.raw,
-		.len = 0,
-		.capacity = buff.len
+		buff.raw,
+		0,
+		buff.len
 	};
 }
 
 generic(T) force_inline Slice<T>
 slice_from_list(List<T> list) {
 	return Slice<T> {
-		.raw = list.raw,
-		.len = list.len
+		list.raw,
+		list.len
 	};
 }
 
@@ -168,12 +169,14 @@ typedef Slice<const u8> string;
 #define S(x) { .raw = (const u8 *) x, .len = (u64) (sizeof(x) - 1) }
 #define s_fmt(s) (int) s.len, (char *) s.raw
 
+#define Byte_Swap_U32(x) ((u32) __builtin_bswap32(x))
+#define Hex(x) Byte_Swap_U32(x)
 
 force_inline string
 string_from_bytes(bytes b) {
 	return string {
-		.raw = (const u8 *) b.raw,
-		.len = b.len
+		(const u8 *) b.raw,
+		b.len
 	};
 }
 
@@ -191,6 +194,11 @@ struct Rect {
 	vec2 size;
 };
 
+struct Range_U64 {
+	u64 begin;
+	u64 end;
+};
+
 force_inline f32
 smooth_move(f32 curr, f32 target, f32 sharpness, f32 dt) {
 	return target + (curr - target) * expf(-sharpness * dt);
@@ -200,13 +208,15 @@ smooth_move(f32 curr, f32 target, f32 sharpness, f32 dt) {
 // alloc.cpp
 //
 
+struct Free_Node {
+	bytes data;
+	Free_Node *next;
+};
+
 struct Arena {
 	bytes reserved;
 	u64   committed;
 	u64   used;
-
-	// bytes data;
-	// u64   used; 
 };
 
 #define KB(x) ((u64) x << 10)
@@ -214,22 +224,25 @@ struct Arena {
 #define GB(x) ((u64) x << 30)
 
 funcdef Arena *arena_new(u64 reserve);
-funcdef void *arena_alloc(Arena *arena, u64 size, u64 alignment = alignof(void *));
+funcdef void *arena_alloc(Arena *arena, u64 size, u64 alignment);
+funcdef void *arena_realloc(Arena *arena, void *old_ptr, u64 old_size, u64 new_size, u64 alignment);
 funcdef void arena_free(Arena *arena, u64 loc = sizeof(Arena), bool rollback = false);
 
 #define alloc_struct(_arr, _T) (_T *) arena_alloc((_arr), sizeof(_T), alignof(_T))
 #define alloc_slice(_arr, _T, _c) Slice<_T> { (_T *) arena_alloc((_arr), sizeof(_T) * (_c), alignof(_T)), (u64) (_c) }
-
-#define Byte_Swap_U32(x) ((u32) __builtin_bswap32(x))
-#define Hex(x) Byte_Swap_U32(x)
+#define realloc_slice(_arr, _T, _old, _count) \
+	Slice<_T> { \
+		(_T *) arena_realloc((_arr), (_old).raw, sizeof(_T) * (_old).len, sizeof(_T) * (_count), alignof(_T)), \
+		(_count) \
+	}
 
 //
 // strings.cpp
 //
 
-funcdef string string_concat(string a, string b, Arena *allocator);
-funcdef Slice<string> string_as_lines(string parent, Arena *allocator);
 funcdef string string_format(Arena *arena, const char *fmt, ...);
+funcdef u64 string_count_lines(string s);
+funcdef u64 string_column_count(string s, int indent_width = 4);
 
 funcdef rune   utf8_decode(string slice, int *width);
 funcdef string utf8_encode(rune cp, Arena *arena);
@@ -259,7 +272,8 @@ struct Render_Clip {
 };
 
 funcdef void graphics_init(const char *title, int width, int height, Arena *persist);
-funcdef bool graphics_update(u32 color, Frame_Input *input);
+funcdef bool graphics_update(Frame_Input *input);
+funcdef void graphics_submit_draw();
 
 funcdef void graphics_push_clip(Rect rect, Arena *frame_alloc);
 funcdef Render_Clip graphics_pop_clip();
@@ -268,7 +282,7 @@ funcdef vec2 graphics_measure_text(string s);
 funcdef f32 graphics_char_width(rune c);
 
 funcdef u8 draw_push_layer(u8 new_layer);
-funcdef void draw_quad(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF, u8 texture = 0, vec2 uv0 = {0,0}, vec2 vec1 = {1,1}, ivec2 circ0 = {0}, ivec2 circ1 = {0});
+funcdef void draw_quad(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF, u8 texture = 0, vec2 uv0 = {0,0}, vec2 vec1 = {1,1}, ivec2 circ0 = {0,0}, ivec2 circ1 = {0,0});
 funcdef vec2 draw_text(string s, vec2 start_pos, u32 color = 0xFFFFFFFF);
 funcdef void draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color = 0xFFFFFFFF);
 funcdef void draw_capsule(vec2 pos, vec2 size, u32 color = 0xFFFFFFFF);
@@ -300,7 +314,7 @@ funcdef void  platform_mem_release(void *ptr, u64 size);
 //
 
 struct Line {
-	u64 begin;
+	u64 index;
 };
 
 struct Buffer 
@@ -309,6 +323,7 @@ struct Buffer
 	List<Line> lines;
 
 	u64 cursor;
+	u64 desired_column;
 };
 
 struct Overflow
@@ -327,8 +342,10 @@ enum Direction {
 funcdef void buffer_make(Buffer *buffer, bytes data, Slice<Line> line_table);
 funcdef void buffer_insert(Buffer *buffer, string s, Overflow *overflow = nullptr);
 funcdef void buffer_delete(Buffer *buffer, u64 count, Direction dir);
-funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir);
+funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir, int tab_width = 4);
 funcdef Slice<string> buffer_as_lines(Buffer *buffer, Arena *allocator);
+funcdef u64  buffer_line_at_index(Buffer *buffer, u64 array_index);
+funcdef Range_U64 buffer_line_range(Buffer *buffer, u64 line_index);
 
 //
 // ui.cpp

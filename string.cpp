@@ -60,18 +60,6 @@ unicode_visual_rune(rune r)
 }
 
 
-funcdef string
-string_concat(string a, string b, Arena *allocator)
-{
-	bytes data = alloc_slice(allocator, u8, a.len + b.len);
-	string result = string_from_bytes(data);
-	
-	memcpy((void *)result.raw, (void *) a.raw, a.len);
-	memcpy((void *)(result.raw + a.len), (void *) b.raw, b.len);
-	
-	return result;
-}
-
 
 funcdef rune
 utf8_decode(string slice, int *width)
@@ -105,8 +93,8 @@ utf8_decode(string slice, int *width)
 				goto invalid;
 
 			rune cp =
-				((b0 & 0x1F) << 6) |
-				((b1 & 0x3F) << 0);
+				((rune) (b0 & 0x1F) << 6) |
+				((rune) (b1 & 0x3F) << 0);
 
 			if (cp < 0x80)
 				goto invalid;
@@ -118,14 +106,14 @@ utf8_decode(string slice, int *width)
 			u8 b1 = s[1];
 			u8 b2 = s[2];
 
-			if ((b1 & 0xC0) != 0x80 ||
-				(b2 & 0xC0) != 0x80)
+			if ((rune) (b1 & 0xC0) != 0x80 ||
+				(rune) (b2 & 0xC0) != 0x80)
 				goto invalid;
 
 			rune cp =
-				((b0 & 0x0F) << 12) |
-				((b1 & 0x3F) << 6 ) |
-				((b2 & 0x3F) << 0 );
+				((rune) (b0 & 0x0F) << 12) |
+				((rune) (b1 & 0x3F) << 6 ) |
+				((rune) (b2 & 0x3F) << 0 );
 
 			if (cp < 0x800)
 				goto invalid;
@@ -147,10 +135,10 @@ utf8_decode(string slice, int *width)
 				goto invalid;
 
 			rune cp =
-				((b0 & 0x07) << 18) |
-				((b1 & 0x3F) << 12) |
-				((b2 & 0x3F) << 6 ) |
-				((b3 & 0x3F) << 0 );
+				((rune) (b0 & 0x07) << 18) |
+				((rune) (b1 & 0x3F) << 12) |
+				((rune) (b2 & 0x3F) << 6 ) |
+				((rune) (b3 & 0x3F) << 0 );
 
 			if (cp < 0x10000)
 				goto invalid;
@@ -218,10 +206,10 @@ string_format(Arena *arena, const char *fmt, ...)
 	va_list args;
 
 	va_start(args, fmt);
-	int len = vsnprintf(NULL, 0, fmt, args);
+	int len = vsnprintf(nullptr, 0, fmt, args);
 	va_end(args);
 
-	if (len < 0) return {0};
+	if (len < 0) return {};
 
 	bytes buf = alloc_slice(arena, u8, len + 1);
 
@@ -232,32 +220,41 @@ string_format(Arena *arena, const char *fmt, ...)
 	return { .raw = buf.raw, .len = (u64) len };
 }
 
-funcdef Slice<string>
-string_as_lines(string parent, Arena *allocator)
+funcdef u64
+string_count_lines(string s)
 {
-    if (parent.len == 0) {
-		return {};
+	u64 count = 0;
+	for (u64 i=0; i<s.len; ++i) {
+		if (s[i] == '\n') count += 1;
+	}
+	if (s[s.len-1] != '\n') count += 1;
+	return count;
+}
+
+funcdef u64
+string_column_count(string s, int indent_width)
+{
+	u64 count = 0;
+
+	int width = 0;
+
+	for (u64 i = 0; i < s.len; i += width) {
+		rune c = utf8_decode(
+			slice(s, i, s.len),
+			&width
+		);
+
+		if (c == '\n') {
+			break;
+		}
+		else if (c == '\t') {
+			u64 remainder = count % indent_width;
+			count += indent_width - remainder;
+		}
+		else {
+			count += 1;
+		}
 	}
 
-    u64 line_count = 0;
-    for (u64 i = 0; i < parent.len; ++i) {
-        if (parent[i] == '\n') line_count += 1;
-    }
-
-    if (parent[parent.len - 1] != '\n') line_count += 1;
-
-    Slice<string> lines = alloc_slice(allocator, string, line_count);
-    u64 out = 0;
-    u64 i0  = 0;
-
-    for (u64 i = 0; i < parent.len; ++i) {
-        if (parent[i] != '\n') continue;
-        lines[out++] = slice(parent, i0, i);
-        i0 = i + 1;
-    }
-    if (parent[parent.len - 1] != '\n') {
-        lines[out++] = slice(parent, i0, parent.len);
-    }
-
-    return lines;
+	return count;
 }

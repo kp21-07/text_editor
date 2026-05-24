@@ -1,11 +1,61 @@
 #include "editor.h"
+#include <stdio.h>
 
 funcdef void
 buffer__build_lines(Buffer *buffer)
 {
+	clear(&buffer->lines);
 	bytes data = slice_from_list(buffer->data);
-	for (u64 i=0; i<data.len; ++i) {
+	
+	for(u64 i=0; i<data.len; ++i)
+	{
+		if (data[i] == '\n') {
+			Line entry = { i };
+
+			append(&buffer->lines, entry);
+		}
 	}
+
+	Line eof_entry = { data.len };
+	append(&buffer->lines, eof_entry);
+}
+
+funcdef void
+buffer__sync_desired_column(Buffer *buf, int tab_width = 4)
+{
+	u64       line     = buffer_line_at_index(buf, buf->cursor);
+	Range_U64 range    = buffer_line_range(buf, line);
+	bytes     data     = slice_from_list(buf->data);
+	string    line_str = string_from_bytes(slice(data, range.begin, buf->cursor));
+	buf->desired_column = string_column_count(line_str, tab_width);
+}
+
+funcdef u64
+buffer__index_from_column(string s, u64 target_column, u64 tab_width = 4)
+{
+	u64 column = 0;
+
+	int width = 0;
+	for (u64 i = 0; i < s.len; i += width) {
+		rune c = utf8_decode(slice(s, i, s.len), &width);
+
+		if (c == '\n') {
+			break;
+		}
+
+		if (column >= target_column) {
+			return i;
+		}
+
+		if (c == '\t') {
+			column += tab_width - (column % tab_width);
+		}
+		else {
+			column += 1;
+		}
+	}
+
+	return s.len;
 }
 
 funcdef void
@@ -14,6 +64,10 @@ buffer_make(Buffer *buffer, bytes data, Slice<Line> line_table)
 	buffer->data = list_from_buffer(data);
 	buffer->lines = list_from_buffer(line_table);
 	buffer->cursor = 0;
+	buffer->desired_column = 0;
+
+	buffer__build_lines(buffer);
+	
 }
 
 
@@ -28,14 +82,25 @@ buffer_insert(Buffer *buffer, string s, Overflow *overflow)
 	bool data_overflow = false;
 	bool line_table_overflow = false;
 
-	if (buffer->data.len + s.len > buffer->data.capacity) {
-		u64 min_required  = buffer->data.len + s.len;
-		u64 required_size = Max(buffer->data.capacity * 2, min_required);
+	u64 needed_data_len  = buffer->data.len + s.len;
+	if (needed_data_len > buffer->data.capacity) {
+		u64 required_size = Max(buffer->data.capacity * 2, needed_data_len * 2);
 
 		data_overflow = true;
 		
 		if (overflow) {
 			overflow->data_size = required_size;
+		}
+	}
+
+	u64 needed_lines_len = string_count_lines(s) + buffer->lines.len;
+	if (needed_lines_len > buffer->lines.capacity) {
+		u64 required_size = Max(buffer->lines.capacity * 2, needed_lines_len * 2);
+
+		line_table_overflow = true;
+
+		if (overflow) {
+			overflow->line_count = required_size;
 		}
 	}
 
@@ -46,49 +111,80 @@ buffer_insert(Buffer *buffer, string s, Overflow *overflow)
 
 	buffer->cursor += s.len;
 
-	// buffer__build_line_ends(buffer);
+	buffer__build_lines(buffer);
+	buffer__sync_desired_column(buffer);
 }
 
 funcdef void
-buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
+buffer_move_cursor(Buffer *buf, u64 amount, Direction dir, int tab_width)
 {
-	for (u64 step = 0; step < amount; ++step) {
+	switch (dir) {
 
-		switch (dir) {
-			case Direction_Left:
-			case Direction_Right: {
-				int delta = 0;
-				if (dir == Direction_Left) {
-					if (buf->cursor == 0) break;
-					delta = -1;
-				}
-				else
-				{
-					if (buf->cursor >= buf->data.len) break;
-					delta = +1;
-				}
+	case Direction_Left:
+	case Direction_Right: {
+		for (u64 step = 0; step < amount; ++step)
+		{
+			s64 delta = (dir == Direction_Left) ? -1 : +1;
 
+			if (dir == Direction_Left) {
+				if (buf->cursor == 0) break;
+			}
+			else {
+				if (buf->cursor >= buf->data.len) break;
+			}
+
+			buf->cursor += delta;
+
+			while (
+				buf->cursor > 0 &&
+				buf->cursor < buf->data.len &&
+				utf8_continuation_byte(buf->data[buf->cursor])
+			) {
 				buf->cursor += delta;
-
-				while (buf->cursor < buf->data.len && utf8_continuation_byte(buf->data[buf->cursor]))
-				{
-					buf->cursor += delta;
-				}
-			} break;
-
-			case Direction_Up:
-			case Direction_Down: {
-				int delta = 0;
-				if (dir == Direction_Up) {
-					delta = -1;
-				} else {
-					delta = +1;
-				}
-			}break;
-
-			default:
-			break;
+			}
 		}
+
+		// horizontal movement resets desired column to actual column
+		{
+			u64 line        = buffer_line_at_index(buf, buf->cursor);
+			Range_U64 range = buffer_line_range(buf, line);
+			bytes data      = slice_from_list(buf->data);
+			string line_str = string_from_bytes(slice(data, range.begin, buf->cursor));
+			buf->desired_column = string_column_count(line_str, tab_width);
+		}
+
+	} break;
+
+	case Direction_Up:
+	case Direction_Down: {
+		for (u64 step = 0; step < amount; ++step)
+		{
+			u64 line = buffer_line_at_index(buf, buf->cursor);
+
+			if (dir == Direction_Up) {
+				if (line == 0) break;
+				line -= 1;
+			}
+			else {
+				// last entry in lines[] is the EOF sentinel
+				if (line + 1 >= buf->lines.len) break;
+				line += 1;
+			}
+
+			Range_U64 range  = buffer_line_range(buf, line);
+			bytes data        = slice_from_list(buf->data);
+			string line_str   = string_from_bytes(slice(data, range.begin, range.end));
+
+			u64 byte_offset   = buffer__index_from_column(line_str, buf->desired_column, tab_width);
+			buf->cursor       = range.begin + byte_offset;
+		}
+
+		// vertical movement does NOT update desired_column
+
+	} break;
+
+	default:
+		break;
 	}
 }
 
@@ -153,32 +249,57 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
 
 	buf->len -= (end - start);
 	buf->raw[buf->len] = 0;
+
+	buffer__build_lines(buffer);
+	buffer__sync_desired_column(buffer);
 }
 
 funcdef Slice<string>
 buffer_as_lines(Buffer *buffer, Arena *allocator)
 {
-    string buf_string = {
-        .raw = (const u8 *) (buffer->data.raw),
-        .len = buffer->data.len
-    };
+	Slice<string> lines = alloc_slice(allocator, string, buffer->lines.len);
+	bytes data = slice_from_list(buffer->data);
 
-    u64 line_count = 1;
-    for (u64 i = 0; i < buf_string.len; ++i) {
-        if (buf_string[i] == '\n') line_count += 1;
-    }
+	for (u64 i=0; i<buffer->lines.len; ++i)
+	{
+		u64 begin = 0;
+		if (i != 0) {
+			begin = buffer->lines[i - 1].index + 1;
+		}
+		u64 end = buffer->lines[i].index;
 
-    Slice<string> lines = alloc_slice(allocator, string, line_count);
-    u64 out = 0;
-    u64 i0  = 0;
+		string line_string = string_from_bytes(slice(data, begin, end));
+		lines[i] = line_string;
+	}
 
-    for (u64 i = 0; i < buf_string.len; ++i) {
-        if (buf_string[i] != '\n') continue;
-        lines[out++] = slice(buf_string, i0, i);
-        i0 = i + 1;
-    }
+	return lines;
+}
 
-    lines[out++] = slice(buf_string, i0, buf_string.len);
+funcdef Range_U64
+buffer_line_range(Buffer *buffer, u64 line_index)
+{
+	u64 end = buffer->lines[line_index].index;
+	u64 begin = 0;
+	if (line_index != 0) begin = buffer->lines[line_index - 1].index + 1;
+	return Range_U64 { begin, end };
+}
 
-    return lines;
+
+funcdef u64 
+buffer_line_at_index(Buffer *buffer, u64 array_index)
+{
+	Slice<Line> lines = slice_from_list(buffer->lines);
+	u64 lower = 0;
+	u64 higher = lines.len;
+
+	while (lower < higher) {
+		u64 mid = lower + (higher - lower) / 2;
+
+		if (lines[mid].index < array_index)
+			lower = mid + 1;
+		else
+			higher = mid;
+	}
+
+	return lower;
 }
