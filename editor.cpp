@@ -163,7 +163,7 @@ ed_update(Frame_Input input)
 				case 'k': buffer_move_cursor(buf, 1, Direction_Up); break;
 
 				case '0': ed_execute_cmd(jump_to_line_start()); break;
-				case '-': ed_execute_cmd(jump_to_line_first_non_space()); break;
+				case '_': ed_execute_cmd(jump_to_line_first_non_space()); break;
 				case '=': ed_execute_cmd(jump_to_line_end()); break;
 
 				case 'w': ed_execute_cmd(jump_to_word_start()); break;

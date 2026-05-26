@@ -371,6 +371,13 @@ buffer_line_range(Buffer *buffer, u64 line_index)
 {
 	if (!buffer) return {};
 
+	if (line_index >= buffer->lines.len) {
+		return Range_U64 {
+			buffer->lines[line_index - 1].index + 1,
+			buffer->data.len
+		};
+	}
+
 	u64 end = buffer->lines[line_index].index;
 	u64 begin = 0;
 	if (line_index != 0) begin = buffer->lines[line_index - 1].index + 1;
