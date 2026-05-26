@@ -73,7 +73,9 @@ ed__parse_command(string cmd)
 		string path = S("");
 		if (args.len > 0) {
 			path = args[0];
-			Ed_Cmd cmd = open_buffer(path);
+			Ed_Cmd cmd;
+			if (platform_is_dir(path)) cmd = open_workspace(path);
+			else cmd = open_buffer(path);
 
 			return cmd;
 		}

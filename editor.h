@@ -365,6 +365,7 @@ struct Time_Duration {
 
 funcdef bytes platform_load_entire_file(string path, Arena *allocator);
 funcdef bool platform_save_entire_file(string path, bytes data, Arena *scratch);
+funcdef bool platform_is_dir(string path);
 funcdef void platform_change_cwd(string dir);
 funcdef string platform_get_current_working_dir(Arena *allocator);
 

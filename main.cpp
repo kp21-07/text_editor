@@ -1,4 +1,5 @@
 #include "alloc.cpp"
+#include "editor.h"
 #include "string.cpp"
 #include "buffer.cpp"
 #include "graphics.cpp"
@@ -189,7 +190,8 @@ int main(int argc, char **argv)
 	Slice<string> args = string_list((u8 **) argv, (u64) argc, ed_frame_arena());
 	if (args.len > 1) {
 		string path = args[1];
-		ed_execute_cmd(open_buffer(path));
+		if (platform_is_dir(path)) ed_execute_cmd(open_workspace(path));
+		else open_buffer(path);
 	}
 
 	for (bool quit = false; !quit;)

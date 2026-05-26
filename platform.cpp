@@ -93,6 +93,17 @@ platform_save_entire_file(string path, bytes data, Arena *scratch)
 	return true;
 }
 
+funcdef bool
+platform_is_dir(string path)
+{
+	struct stat path_stat;
+	if (stat((const char*) path.raw, &path_stat) < 0) {
+		return -1;
+	}
+
+	return S_ISDIR(path_stat.st_mode);
+}
+
 funcdef void
 platform_change_cwd(string dir)
 {
