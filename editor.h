@@ -268,6 +268,12 @@ string_from_bytes(bytes b) {
 	};
 }
 
+enum Char_Kind {
+	Char_Space,
+	Char_Word,
+	Char_Punct,
+};
+
 funcdef string string_format(Arena *arena, const char *fmt, ...);
 funcdef u64 string_count_lines(string s);
 funcdef u64 string_column_count(string s, int indent_width = 4);
@@ -279,8 +285,10 @@ funcdef Slice<string> string_split(string original, Arena *arena);
 funcdef bool string_equal(string a, string b);
 funcdef string string_copy(string str, Arena *arena);
 
+funcdef Char_Kind char_kind(rune r);
 funcdef rune   utf8_decode(string slice, int *width);
 funcdef string utf8_encode(rune cp, Arena *arena);
+funcdef u64    utf8_prev_boundary(string data, u64 i);
 funcdef int    utf8_character_width(u8 first_byte);
 #define        utf8_continuation_byte(b) (((b) & 0xC0) == 0x80)
 funcdef bool   is_space(rune r);
@@ -350,6 +358,7 @@ struct Time_Duration {
 
 funcdef bytes platform_load_entire_file(string path, Arena *allocator);
 funcdef bool platform_save_entire_file(string path, bytes data, Arena *scratch);
+funcdef void platform_change_cwd(string dir);
 
 funcdef u64 platform_time_now();
 funcdef Time_Duration platform_time_diff(u64 start, u64 end);
@@ -390,9 +399,10 @@ enum Direction {
 
 funcdef void buffer_make(Buffer *buffer, u64 data_cap, u64 line_count, string path);
 funcdef void buffer_deinit(Buffer *buffer);
-funcdef void buffer_insert(Buffer *buffer, string s);
+funcdef void buffer_insert(Buffer *buffer, string s, Arena *scratch);
 funcdef void buffer_delete(Buffer *buffer, u64 count, Direction dir);
-funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir, int tab_width = 4);
+funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir);
+funcdef void buffer_move_cursor_to(Buffer *buffer, u64 index);
 funcdef Slice<string> buffer_as_lines(Buffer *buffer, Arena *allocator);
 funcdef u64  buffer_line_at_index(Buffer *buffer, u64 array_index);
 funcdef Range_U64 buffer_line_range(Buffer *buffer, u64 line_index);
@@ -413,6 +423,18 @@ enum Ed_Cmd_Kind {
 	Cmd_Buffer_Open,
 	Cmd_Buffer_Close,
 	Cmd_Buffer_Save,
+
+	Cmd_Jump_To_Line_Start,
+	Cmd_Jump_To_Line_First_Non_Space,
+	Cmd_Jump_To_Line_End,
+
+	Cmd_Jump_To_Word_Start,
+	Cmd_Jump_To_Word_End,
+	Cmd_Jump_To_Word_Prev,
+
+	Cmd_Open_Workspace,
+
+	Cmd_Exit,
 };
 
 struct Ed_Cmd {
@@ -420,7 +442,7 @@ struct Ed_Cmd {
 
 	/////////// buffer ///////////
 
-	string buffer_path;
+	string path;
 };
 
 enum Ed_Error_Kind : u32 {
@@ -435,16 +457,31 @@ struct Ed_Error {
 };
 
 funcdef void ed_init();
-funcdef bool ed_update();
+funcdef bool ed_update(Frame_Input input);
+funcdef void ed_change_mode(Ed_Mode mode);
+funcdef Buffer *ed_active_buffer();
+funcdef Ed_Mode ed_mode();
+funcdef string ed_command_as_string();
 
 funcdef Ed_Error ed_execute_cmd(Ed_Cmd cmd);
 funcdef void ed_handle_error(Ed_Error error);
+
+funcdef Arena *ed_persist_arnea();
+funcdef Arena *ed_frame_arena();
 
 // commands
 
 funcdef Ed_Cmd open_buffer(string path);
 funcdef Ed_Cmd close_buffer(string path);
 funcdef Ed_Cmd save_buffer(string to_path);
+funcdef Ed_Cmd open_workspace(string path);
+funcdef Ed_Cmd jump_to_line_start();
+funcdef Ed_Cmd jump_to_line_first_non_space();
+funcdef Ed_Cmd jump_to_line_end();
+funcdef Ed_Cmd jump_to_word_start();
+funcdef Ed_Cmd jump_to_word_end();
+funcdef Ed_Cmd jump_to_word_previous();
+funcdef Ed_Cmd exit_editor();
 
 #endif
 

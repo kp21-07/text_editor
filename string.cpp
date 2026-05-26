@@ -61,6 +61,27 @@ unicode_visual_rune(rune r)
 
 
 
+funcdef Char_Kind
+char_kind(rune r)
+{
+	if (is_space(r)) {
+		return Char_Space;
+	}
+
+	// @TODO: utf8 aware
+
+	if (
+		(r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') ||
+		r == '_'
+	) {
+		return Char_Word;
+	}
+
+	return Char_Punct;
+}
+
 funcdef rune
 utf8_decode(string slice, int *width)
 {
@@ -197,6 +218,14 @@ utf8_encode(rune cp, Arena *arena)
 	out[3] = 0x80 | ((cp >> 0 ) & 0x3F);
 
 	return slice(string_from_bytes(out), 0, 4);
+}
+
+funcdef u64
+utf8_prev_boundary(string data, u64 i)
+{
+	if (i == 0) return 0;
+    do { i--; } while (i > 0 && utf8_continuation_byte(data.raw[i]));
+    return i;
 }
 
 

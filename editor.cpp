@@ -26,6 +26,7 @@ struct Panel {
 global struct Editor
 {
 	Ed_Mode mode;
+	bool should_exit;
 
 	Buffer *active_buffer;
 
@@ -99,6 +100,22 @@ ed__parse_command(string cmd)
 
 		return cmd;
 	}
+
+	if (string_equal(function, S("open_workspace")))
+	{
+		if (args.len > 0) {
+			string path = args[0];
+			Ed_Cmd cmd = open_workspace(path);
+			return cmd;
+		}
+	}
+
+
+	if (string_equal(function, S("exit")))
+	{
+		Ed_Cmd cmd = exit_editor();
+		return cmd;
+	}
 	
 	return {};
 }
@@ -115,12 +132,23 @@ ed_init()
 	editor.mode = Mode_Normal;
 }
 
-funcdef bool
-ed_update()
+funcdef void
+ed_change_mode(Ed_Mode mode)
 {
-	Frame_Input input = {};
-	bool window_close = graphics_update(&input);
+	if (mode == Mode_Insert)
+	{
+		if (ed_active_buffer() != nullptr)
+			editor.mode = Mode_Insert;
 
+		return;
+	}
+
+	editor.mode = mode;
+}
+
+funcdef bool
+ed_update(Frame_Input input)
+{
 	auto buf = editor.active_buffer;
 	rune c = input.character;
 	string encoded_char = utf8_encode(c, editor.frame_arena);
@@ -128,12 +156,50 @@ ed_update()
 	switch (editor.mode) {
 		case Mode_Normal: {
 			switch(c) {
-				case 'i': editor.mode = Mode_Insert; break;
-				case ':': editor.mode = Mode_Command; break;
+				case ':': ed_change_mode(Mode_Command); break;
 				case 'h': buffer_move_cursor(buf, 1, Direction_Left); break;
 				case 'l': buffer_move_cursor(buf, 1, Direction_Right); break;
 				case 'j': buffer_move_cursor(buf, 1, Direction_Down); break;
 				case 'k': buffer_move_cursor(buf, 1, Direction_Up); break;
+
+				case '0': ed_execute_cmd(jump_to_line_start()); break;
+				case '-': ed_execute_cmd(jump_to_line_first_non_space()); break;
+				case '=': ed_execute_cmd(jump_to_line_end()); break;
+
+				case 'w': ed_execute_cmd(jump_to_word_start()); break;
+				case 'e': ed_execute_cmd(jump_to_word_end()); break;
+				case 'b': ed_execute_cmd(jump_to_word_previous()); break;
+
+				case 'i': ed_change_mode(Mode_Insert); break;
+				case 'a':
+				{
+					buffer_move_cursor(buf, 1, Direction_Right);
+					ed_change_mode(Mode_Insert);
+				} break;
+				case 'I':
+				{
+					ed_execute_cmd(jump_to_line_first_non_space());
+					ed_change_mode(Mode_Insert);
+				} break;
+				case 'A':
+				{
+					ed_execute_cmd(jump_to_line_end());
+					ed_change_mode(Mode_Insert);
+				} break;
+				case 'o':
+				{
+					ed_execute_cmd(jump_to_line_end());
+					buffer_insert(buf, S("\n"), ed_frame_arena());
+					ed_change_mode(Mode_Insert);
+				} break;
+				case 'O':
+				{
+
+					ed_execute_cmd(jump_to_line_start());
+					buffer_move_cursor(buf, 1, Direction_Left);
+					buffer_insert(buf, S("\n"), ed_frame_arena());
+					ed_change_mode(Mode_Insert);
+				} break;
 			}
 		} break;
 
@@ -174,30 +240,12 @@ ed_update()
 		} break;
 
 		case Mode_Insert: {
-			if      (input.key_flags & key_Escape) editor.mode = Mode_Normal;
+			if      (input.key_flags & key_Escape) ed_change_mode(Mode_Normal);
 			else if (input.key_flags & key_Delete) buffer_delete(buf, 1, Direction_Right);
 			else if (input.key_flags & key_Backspace) buffer_delete(buf, 1, Direction_Left);
 			else if (c) {
 				bool move_back = false;
-
-				switch (c) {
-				case '\n': {
-					u64 line_index = buffer_line_at_index(buf, buf->cursor);
-					Range_U64 line_range = buffer_line_range(buf, line_index);
-					string data = string_from_bytes(slice_from_list(buf->data));
-					string current_line = slice(data, line_range.begin, line_range.end);
-
-					u64 i=0;
-					while(i < current_line.len && (current_line[i] == ' ' || current_line[i] == '\t'))
-						i += 1;
-
-					string indents = slice(current_line, 0, i);
-
-					encoded_char = string_concat(encoded_char, indents, editor.frame_arena);
-				} break;
-				}
-
-				buffer_insert(editor.active_buffer, encoded_char);
+				buffer_insert(ed_active_buffer(), encoded_char, ed_frame_arena());
 				if (move_back) buffer_move_cursor(buf, 1, Direction_Left);
 			}
 		} break;
@@ -206,113 +254,245 @@ ed_update()
 			break;
 	}
 
-	return window_close;
+	return editor.should_exit;
 }
+
+
+funcdef Buffer *
+ed_active_buffer()
+{
+	return editor.active_buffer;
+}
+
+
+funcdef Ed_Mode
+ed_mode()
+{
+	return editor.mode;
+}
+
+funcdef string
+ed_command_as_string()
+{
+	string str = {
+		editor.command,
+		editor.command_length
+	};
+
+	return str;
+}
+
 
 funcdef Ed_Error
 ed_execute_cmd(Ed_Cmd cmd)
 {
 	Ed_Error error = {};
-	
+
+	#define active(v)   Buffer *v = ed_active_buffer(); if (!v) break
+	#define buf_str(b)  string_from_bytes(slice_from_list((b)->data))
+
 	switch (cmd.kind)
 	{
-		case Cmd_None: break; // ignore
+	case Cmd_None: break;
 
-		case Cmd_Buffer_Open: {
-			Buffer *buffer = nullptr;
-			if (editor.free_buffers) {
-				buffer = (Buffer *) editor.free_buffers;
-				editor.free_buffers = editor.free_buffers->next;
-			} else {
-				buffer = alloc_struct(editor.buffer_arena, Buffer);
-			}
+	case Cmd_Buffer_Open: {
+		Buffer *buf;
+		if (editor.free_buffers) {
+			buf = (Buffer *)editor.free_buffers;
+			editor.free_buffers = editor.free_buffers->next;
+		} else {
+			buf = alloc_struct(editor.buffer_arena, Buffer);
+		}
+		string path  = cmd.path;
+		string input = S("");
+		if (path.len) input = string_from_bytes(platform_load_entire_file(path, editor.frame_arena));
+		buffer_make(buf, Max(input.len * 2, KB(512)), Max(string_count_lines(input) * 2, 2048), path);
+		buf->next = editor.buffers;
+		editor.buffers = buf;
+		editor.buffer_count += 1;
+		editor.active_buffer = buf;
+		buffer_insert(buf, input, ed_frame_arena());
+		buf->cursor = 0;
+	} break;
 
-			string path = cmd.buffer_path;
-			string input_str = S("");
-			if (path.len) {
-				bytes input_data = platform_load_entire_file(path, editor.frame_arena);
-				input_str = string_from_bytes(input_data);
-			}
-			u64 lines = string_count_lines(input_str);
+	case Cmd_Buffer_Close: {
+		string path = cmd.path;
+		if (!path.len) {
+			if (!editor.active_buffer) break;
+			path = editor.active_buffer->path;
+			if (!path.len) { error.kind = Ed_Error_Invalid_Argument; break; }
+		}
+		Buffer *last = nullptr;
+		for (Buffer *buf = editor.buffers; buf; last = buf, buf = buf->next) {
+			if (!string_equal(buf->path, path)) continue;
+			(last ? last->next : editor.buffers) = buf->next;
+			if (editor.active_buffer == buf) editor.active_buffer = editor.buffers;
+			editor.buffer_count -= 1;
+			buffer_deinit(buf);
+			buf->next = editor.free_buffers;
+			editor.free_buffers = buf;
+			break;
+		}
+	} break;
 
-			buffer_make(
-				buffer, 
-				Max(input_str.len * 2, KB(512)),
-				Max(lines * 2, 2048),
-				path
-			);
-			buffer->next = editor.buffers;
-			editor.buffers = buffer;
-			editor.buffer_count += 1;
-			editor.active_buffer = buffer;
+	case Cmd_Buffer_Save: {
+		active(buf);
+		string path = cmd.path.len ? cmd.path : buf->path;
+		if (!path.len) { error.kind = Ed_Error_Invalid_Argument; break; }
+		if (!platform_save_entire_file(path, slice_from_list(buf->data), editor.frame_arena))
+			error.kind = Ed_Error_Cmd_Failed;
+	} break;
 
-			buffer_insert(buffer, input_str);
-			buffer->cursor = 0;
-		} break;
+	case Cmd_Open_Workspace: {
+		for (Buffer *buf = editor.buffers; buf; buf = buf->next) buffer_deinit(buf);
+		arena_free(editor.buffer_arena);
+		editor.free_buffers = nullptr;
+		if (cmd.path.len) platform_change_cwd(cmd.path);
+	} break;
 
-		case Cmd_Buffer_Close: {
-			Buffer *last = nullptr;
+	case Cmd_Jump_To_Line_Start: {
+		active(buf);
+		buffer_move_cursor_to(buf, buffer_line_range(buf, buffer_line_at_index(buf, buf->cursor)).begin);
+	} break;
 
-			string close_path = cmd.buffer_path;
-			if (!close_path.len) {
-				close_path = editor.active_buffer->path;
-				if (!close_path.len) {
-					error.kind = Ed_Error_Invalid_Argument;
-					break;
-				}
-			}
+	case Cmd_Jump_To_Line_First_Non_Space: {
+		active(buf);
+		string data    = buf_str(buf);
+		Range_U64 range = buffer_line_range(buf, buffer_line_at_index(buf, buf->cursor));
+		u64 i = range.begin; int w = 0;
+		while (i < range.end && is_space(utf8_decode(slice(data, i, range.end), &w))) i += w;
+		buffer_move_cursor_to(buf, i);
+	} break;
 
-			for(Buffer *buf = editor.buffers; buf != nullptr; last = buf, buf = buf->next) {
-				if (string_equal(buf->path, close_path)) {
+	case Cmd_Jump_To_Line_End: {
+		active(buf);
+		buffer_move_cursor_to(buf, buffer_line_range(buf, buffer_line_at_index(buf, buf->cursor)).end);
+	} break;
 
-					if (last) {
-						last->next = buf->next;
-					} else {
-						editor.buffers = buf->next;
-					}
+	case Cmd_Jump_To_Word_Start: {
+		active(buf);
+		string data = buf_str(buf);
 
-					if (editor.active_buffer == buf) {
-						editor.active_buffer = editor.buffers;
-					}
+		u64 i = buf->cursor;
+		int w = 0;
 
-					editor.buffer_count -= 1;
+		if (i >= data.len) break;
 
-					buffer_deinit(buf);
+		rune r = utf8_decode(slice(data, i, data.len), &w);
+		Char_Kind kind = char_kind(r);
 
-					buf->next = editor.free_buffers;
-					editor.free_buffers = buf;
+		while (i < data.len) {
+			r = utf8_decode(slice(data, i, data.len), &w);
 
-					break;
-				}
-			}
-		} break;
-
-		case Cmd_Buffer_Save:
-		{
-			Buffer *buf = editor.active_buffer;
-			if (!buf) break;
-
-			string save_path = cmd.buffer_path;
-			if (!save_path.len) {
-				save_path = buf->path;
-				if (!save_path.len) {
-					error.kind = Ed_Error_Invalid_Argument;
-					break;
-				}
-			}
-
-			bytes data = slice_from_list(buf->data);
-			bool ok = platform_save_entire_file(save_path, data, editor.frame_arena);
-			if (!ok) {
-				error.kind = Ed_Error_Cmd_Failed;
+			if (char_kind(r) != kind) {
 				break;
 			}
-		} break;
 
-		default:
-			error.kind = Ed_Error_Invalid_Command;
+			i += w;
+		}
+
+		while (i < data.len) {
+			r = utf8_decode(slice(data, i, data.len), &w);
+
+			if (char_kind(r) != Char_Space) {
+				break;
+			}
+
+			i += w;
+		}
+
+		buffer_move_cursor_to(buf, i);
+	} break;
+
+	case Cmd_Jump_To_Word_End: {
+		active(buf);
+
+		string data = buf_str(buf);
+
+		u64 i = buf->cursor;
+		int w = 0;
+
+		if (i >= data.len) break;
+
+		rune r = utf8_decode(slice(data, i, data.len), &w);
+
+		while (i < data.len && char_kind(r) == Char_Space) {
+			i += w;
+
+			if (i >= data.len) break;
+
+			r = utf8_decode(slice(data, i, data.len), &w);
+		}
+
+		if (i >= data.len) break;
+
+		Char_Kind kind = char_kind(r);
+
+		u64 last = i;
+
+		while (i < data.len) {
+			r = utf8_decode(slice(data, i, data.len), &w);
+
+			if (char_kind(r) != kind) {
+				break;
+			}
+
+			last = i;
+			i += w;
+		}
+
+		buffer_move_cursor_to(buf, last);
+	} break;
+
+	case Cmd_Jump_To_Word_Prev: {
+		active(buf);
+
+		string data = buf_str(buf);
+
+		u64 i = buf->cursor;
+
+		if (i == 0) break;
+
+		i = utf8_prev_boundary(data, i);
+
+		int w = 0;
+
+		rune r = utf8_decode(slice(data, i, data.len), &w);
+
+		while (i > 0 && char_kind(r) == Char_Space) {
+			i = utf8_prev_boundary(data, i);
+			r = utf8_decode(slice(data, i, data.len), &w);
+		}
+
+		Char_Kind kind = char_kind(r);
+
+		while (i > 0) {
+			u64 prev = utf8_prev_boundary(data, i);
+
+			rune pr = utf8_decode(slice(data, prev, data.len), &w);
+
+			if (char_kind(pr) != kind) {
+				break;
+			}
+
+			i = prev;
+		}
+
+		buffer_move_cursor_to(buf, i);
+	} break;
+
+	case Cmd_Exit: {
+		editor.should_exit = true;
+	} break;
+
+	default: 
+		error.kind = Ed_Error_Invalid_Command;
 		break;
+
 	}
+
+	#undef active
+	#undef buf_str
 
 	return error;
 }
@@ -328,6 +508,19 @@ ed_handle_error(Ed_Error error)
 	}
 }
 
+
+funcdef Arena *
+ed_persist_arnea()
+{
+	return editor.persist_arena;
+}
+
+funcdef Arena *
+ed_frame_arena()
+{
+	return editor.frame_arena;
+}
+
 /////////////////////////////////////////////
 // ~geb: commands
 
@@ -337,7 +530,7 @@ open_buffer(string path)
 	Ed_Cmd cmd = {};
 
 	cmd.kind = Cmd_Buffer_Open;
-	cmd.buffer_path = path;
+	cmd.path = path;
 
 	return cmd;
 }
@@ -349,7 +542,7 @@ close_buffer(string path)
 	Ed_Cmd cmd = {};
 
 	cmd.kind = Cmd_Buffer_Close;
-	cmd.buffer_path = path;
+	cmd.path = path;
 
 	return cmd;
 }
@@ -360,7 +553,74 @@ save_buffer(string to_path)
 	Ed_Cmd cmd = {};
 
 	cmd.kind = Cmd_Buffer_Save;
-	cmd.buffer_path = to_path;
+	cmd.path = to_path;
 
+	return cmd;
+}
+
+
+funcdef Ed_Cmd
+open_workspace(string path)
+{
+	Ed_Cmd cmd = {};
+
+	cmd.kind = Cmd_Open_Workspace;
+	cmd.path = path;
+
+	return cmd;
+}
+
+
+funcdef Ed_Cmd
+jump_to_line_start()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Line_Start;
+	return cmd;
+}
+
+funcdef Ed_Cmd jump_to_line_first_non_space()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Line_First_Non_Space;
+	return cmd;
+}
+
+funcdef Ed_Cmd jump_to_line_end()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Line_End;
+	return cmd;
+}
+
+
+funcdef Ed_Cmd
+jump_to_word_start()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Word_Start;
+	return cmd;
+}
+
+funcdef Ed_Cmd jump_to_word_end()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Word_End;
+	return cmd;
+}
+
+funcdef Ed_Cmd jump_to_word_previous()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Word_Prev;
+	return cmd;
+}
+
+
+funcdef Ed_Cmd
+exit_editor()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Exit;
 	return cmd;
 }

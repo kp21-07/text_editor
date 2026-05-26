@@ -302,7 +302,7 @@ graphics_update(Frame_Input *input)
 
 	if (RGFW_window_shouldClose(gfx.win)) return true;
 
-	// RGFW_waitForEvent(-1);
+	RGFW_waitForEvent(-1);
 	RGFW_event event = {0};
 	while (RGFW_window_checkEvent(gfx.win, &event)) {
 		switch (event.type) {

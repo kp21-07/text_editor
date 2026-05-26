@@ -1,5 +1,6 @@
 #include "editor.h"
 
+#include <unistd.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -92,6 +93,24 @@ platform_save_entire_file(string path, bytes data, Arena *scratch)
 	return true;
 }
 
+funcdef void
+platform_change_cwd(string dir)
+{
+	if (!dir.raw || !dir.len) return;
+
+	static char path[4098];
+	u64 len = dir.len;
+
+	if (len >= sizeof(path)) {
+		len = sizeof(path) - 1;
+	}
+
+	memcpy(path, dir.raw, len);
+	path[len] = '\0';
+
+	chdir(path);
+}
+
 funcdef u64
 platform_time_now() {
 	struct timespec ts;
@@ -113,7 +132,6 @@ platform_time_diff(u64 start, u64 end) {
 
 	return result;
 }
-
 
 
 funcdef void *

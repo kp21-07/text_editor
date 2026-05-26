@@ -1,4 +1,6 @@
 #include "editor.h"
+#include "config.h"
+
 #include <stdio.h>
 
 funcdef void
@@ -21,17 +23,17 @@ buffer__build_lines(Buffer *buffer)
 }
 
 funcdef void
-buffer__sync_desired_column(Buffer *buf, int tab_width = 4)
+buffer__sync_desired_column(Buffer *buf)
 {
 	u64       line     = buffer_line_at_index(buf, buf->cursor);
 	Range_U64 range    = buffer_line_range(buf, line);
 	bytes     data     = slice_from_list(buf->data);
 	string    line_str = string_from_bytes(slice(data, range.begin, buf->cursor));
-	buf->desired_column = string_column_count(line_str, tab_width);
+	buf->desired_column = string_column_count(line_str, TAB_WIDTH);
 }
 
 funcdef u64
-buffer__index_from_column(string s, u64 target_column, u64 tab_width = 4)
+buffer__index_from_column(string s, u64 target_column)
 {
 	u64 column = 0;
 
@@ -48,7 +50,7 @@ buffer__index_from_column(string s, u64 target_column, u64 tab_width = 4)
 		}
 
 		if (c == '\t') {
-			column += tab_width - (column % tab_width);
+			column += TAB_WIDTH - (column % TAB_WIDTH);
 		}
 		else {
 			column += 1;
@@ -70,7 +72,6 @@ buffer_make(Buffer *buffer, u64 data_cap, u64 line_count, string path)
 	buffer__build_lines(buffer);
 }
 
-
 funcdef void
 buffer_deinit(Buffer *buffer)
 {
@@ -79,9 +80,31 @@ buffer_deinit(Buffer *buffer)
 }
 
 funcdef void
-buffer_insert(Buffer *buffer, string s)
+buffer_insert(Buffer *buffer, string s, Arena *scratch)
 {
 	if (!buffer) return;
+
+	if (s.len == 1) { // special case single char inputs
+		char c = s[0];
+		switch (c) {
+		case '\n':
+			{
+				u64 line_index = buffer_line_at_index(buffer, buffer->cursor);
+				Range_U64 line_range = buffer_line_range(buffer, line_index);
+
+				string data = string_from_bytes(slice_from_list(buffer->data));
+				string current_line = slice(data, line_range.begin, line_range.end);
+
+				u64 i=0;
+				while(i < current_line.len && is_space(current_line[i]))
+					i += 1;
+
+				string indents = slice(current_line, 0, i);
+
+				s = string_concat(s, indents, scratch);
+			} break;
+		}
+	}
 
 	u64 needed_data_len  = buffer->data.len + s.len;
 	if (needed_data_len > buffer->data.capacity) {
@@ -121,7 +144,7 @@ buffer_insert(Buffer *buffer, string s)
 }
 
 funcdef void
-buffer_move_cursor(Buffer *buf, u64 amount, Direction dir, int tab_width)
+buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
 {
 	if (!buf) return;
 
@@ -157,7 +180,7 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir, int tab_width)
 			Range_U64 range = buffer_line_range(buf, line);
 			bytes data      = slice_from_list(buf->data);
 			string line_str = string_from_bytes(slice(data, range.begin, buf->cursor));
-			buf->desired_column = string_column_count(line_str, tab_width);
+			buf->desired_column = string_column_count(line_str, TAB_WIDTH);
 		}
 
 	} break;
@@ -182,7 +205,7 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir, int tab_width)
 			bytes data        = slice_from_list(buf->data);
 			string line_str   = string_from_bytes(slice(data, range.begin, range.end));
 
-			u64 byte_offset   = buffer__index_from_column(line_str, buf->desired_column, tab_width);
+			u64 byte_offset   = buffer__index_from_column(line_str, buf->desired_column);
 			buf->cursor       = range.begin + byte_offset;
 		}
 
@@ -193,6 +216,16 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir, int tab_width)
 	default:
 		break;
 	}
+}
+
+
+funcdef void
+buffer_move_cursor_to(Buffer *buffer, u64 index)
+{
+	if (!buffer || index > buffer->data.len) return;
+
+	buffer->cursor = index;
+	buffer__sync_desired_column(buffer);
 }
 
 funcdef void
