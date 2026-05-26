@@ -18,6 +18,7 @@ arena_new(u64 reserve)
 	arena->committed = commit_size;
 	arena->used = sizeof(Arena);
 
+
 	return arena;
 }
 
@@ -30,6 +31,7 @@ arena_delete(Arena *arena)
 	u64 size = arena->reserved.len;
 
 	assert(base && size);
+
 
 	platform_mem_release(base, size);
 }
@@ -84,11 +86,15 @@ arena_realloc(Arena *arena, void *old_ptr, u64 old_size, u64 new_size, u64 align
 		}
 
 		arena->used = new_end;
+
+
 		return old_ptr;
 	}
 
 	void *new_ptr = arena_alloc(arena, new_size, alignment);
 	memmove(new_ptr, old_ptr, old_size);
+
+
 	return new_ptr;
 }
 
@@ -98,6 +104,8 @@ arena_free(Arena *arena, u64 loc, bool rollback)
 	((void) platform_mem_release);
 	assert(loc >= sizeof(Arena) && "arena_free: loc would overwrite arena header");
 	assert(arena->used >= loc && "arena_free: loc is ahead of current used");
+	
+
 	arena->used = loc;
 
 	if (rollback) {

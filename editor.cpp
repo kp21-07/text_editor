@@ -37,6 +37,7 @@ global struct Editor
 	u64     command_length;
 	
 	Panel *panel_tree;
+	string project_dir;
 
 	/////////////////////
 	// ~geb: memory management
@@ -127,9 +128,28 @@ ed_init()
 
 	editor.persist_arena = arena_new(MB(8));
 	editor.frame_arena = arena_new(MB(8));
-	editor.buffer_arena = arena_new(GB(1));
+	editor.buffer_arena = arena_new(KB(4));
 
 	editor.mode = Mode_Normal;
+	editor.project_dir = platform_get_current_working_dir(ed_persist_arnea());
+}
+
+
+funcdef void
+ed_deinit()
+{
+	Buffer *buf = editor.buffers;
+	while(buf) {
+		Buffer *next = buf->next;
+		buffer_deinit(buf);
+		buf = next;
+	}
+
+    arena_delete(editor.buffer_arena);
+    arena_delete(editor.frame_arena);
+    arena_delete(editor.persist_arena);
+
+    MemZeroStruct(&editor);
 }
 
 funcdef void
@@ -163,7 +183,7 @@ ed_update(Frame_Input input)
 				case 'k': buffer_move_cursor(buf, 1, Direction_Up); break;
 
 				case '0': ed_execute_cmd(jump_to_line_start()); break;
-				case '-': ed_execute_cmd(jump_to_line_first_non_space()); break;
+				case '_': ed_execute_cmd(jump_to_line_first_non_space()); break;
 				case '=': ed_execute_cmd(jump_to_line_end()); break;
 
 				case 'w': ed_execute_cmd(jump_to_word_start()); break;
@@ -313,6 +333,7 @@ ed_execute_cmd(Ed_Cmd cmd)
 		editor.active_buffer = buf;
 		buffer_insert(buf, input, ed_frame_arena());
 		buf->cursor = 0;
+		buf->dirty = false;
 	} break;
 
 	case Cmd_Buffer_Close: {
@@ -341,18 +362,35 @@ ed_execute_cmd(Ed_Cmd cmd)
 		if (!path.len) { error.kind = Ed_Error_Invalid_Argument; break; }
 		if (!platform_save_entire_file(path, slice_from_list(buf->data), editor.frame_arena))
 			error.kind = Ed_Error_Cmd_Failed;
+		buf->dirty = false;
 	} break;
 
 	case Cmd_Open_Workspace: {
-		for (Buffer *buf = editor.buffers; buf; buf = buf->next) buffer_deinit(buf);
+		Buffer *buf = editor.buffers;
+		while(buf) {
+			Buffer *next = buf->next;
+			buffer_deinit(buf);
+			buf = next;
+		}
+
 		arena_free(editor.buffer_arena);
 		editor.free_buffers = nullptr;
-		if (cmd.path.len) platform_change_cwd(cmd.path);
+		editor.buffers = nullptr;
+		editor.buffer_count = 0;
+		editor.active_buffer = nullptr;
+
+		if (cmd.path.len)
+		{
+			platform_change_cwd(cmd.path);
+			editor.project_dir = platform_get_current_working_dir(ed_persist_arnea());
+		}
 	} break;
 
 	case Cmd_Jump_To_Line_Start: {
 		active(buf);
-		buffer_move_cursor_to(buf, buffer_line_range(buf, buffer_line_at_index(buf, buf->cursor)).begin);
+		u64 line_index = buffer_line_at_index(buf, buf->cursor);
+		Range_U64 line_range = buffer_line_range(buf, line_index);
+		buffer_move_cursor_to(buf, line_range.begin);
 	} break;
 
 	case Cmd_Jump_To_Line_First_Non_Space: {
@@ -360,13 +398,18 @@ ed_execute_cmd(Ed_Cmd cmd)
 		string data    = buf_str(buf);
 		Range_U64 range = buffer_line_range(buf, buffer_line_at_index(buf, buf->cursor));
 		u64 i = range.begin; int w = 0;
-		while (i < range.end && is_space(utf8_decode(slice(data, i, range.end), &w))) i += w;
+
+		while (i < range.end && is_space(utf8_decode(slice(data, i, range.end), &w)))
+			i += w;
+
 		buffer_move_cursor_to(buf, i);
 	} break;
 
 	case Cmd_Jump_To_Line_End: {
 		active(buf);
-		buffer_move_cursor_to(buf, buffer_line_range(buf, buffer_line_at_index(buf, buf->cursor)).end);
+		u64 line_index = buffer_line_at_index(buf, buf->cursor);
+		Range_U64 line_range = buffer_line_range(buf, line_index);
+		buffer_move_cursor_to(buf, line_range.end);
 	} break;
 
 	case Cmd_Jump_To_Word_Start: {

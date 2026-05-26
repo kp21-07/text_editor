@@ -122,6 +122,22 @@ platform_change_cwd(string dir)
 	chdir(path);
 }
 
+funcdef string
+platform_get_current_working_dir(Arena *allocator)
+{
+	char *cwd = getcwd(nullptr, 0);
+	defer(free(cwd));
+
+	if (!cwd) {
+		return {};
+	}
+
+	string cstring = { (u8 *) cwd, strlen(cwd) };
+	string result = string_copy(cstring, allocator);
+
+	return result;
+}
+
 funcdef u64
 platform_time_now() {
 	struct timespec ts;

@@ -60,26 +60,65 @@ unicode_visual_rune(rune r)
 }
 
 
-
 funcdef Char_Kind
 char_kind(rune r)
 {
+	// @TODO: utf8 aware
+
 	if (is_space(r)) {
 		return Char_Space;
 	}
 
-	// @TODO: utf8 aware
+	switch (r) {
+		case '(':
+		case '{':
+		case '[':
+			return Char_Open;
 
-	if (
-		(r >= 'a' && r <= 'z') ||
-		(r >= 'A' && r <= 'Z') ||
-		(r >= '0' && r <= '9') ||
-		r == '_'
-	) {
-		return Char_Word;
+		case ')':
+		case '}':
+		case ']':
+			return Char_Close;
+
+		case '"':
+		case '\'':
+		case '`':
+			return Char_Quote;
+
+		case '@': case '!': case '#': case '$':
+		case '^': case '%': case '&': case '*':
+		case '-': case '+': case '=': case '|':
+		case '\\': case '/': case ':': case ';':
+		case ',': case '.': case '?': case '~':
+			return Char_Punct;
 	}
 
-	return Char_Punct;
+	return Char_Word;
+}
+
+
+funcdef rune
+char_get_pair(rune r)
+{
+	switch (r) {
+		case '(': return ')';
+		case ')': return '(';
+
+		case '{': return '}';
+		case '}': return '{';
+
+		case '[': return ']';
+		case ']': return '[';
+
+		case '<': return '>';
+		case '>': return '<';
+
+		case '"': return '"';
+		case '\'': return '\'';
+		case '`': return '`';
+	}
+
+	return 0;
 }
 
 funcdef rune
@@ -421,4 +460,16 @@ string_copy(string str, Arena *arena)
 	bytes data = alloc_slice(arena, u8, str.len);
 	memcpy(data.raw, str.raw, str.len);
 	return string_from_bytes(data);
+}
+
+funcdef Slice<string>
+string_list(u8 **cstring, u64 len, Arena *arena)
+{
+	Slice<string> result = alloc_slice(arena, string, len);
+	for (u64 i=0; i<len; ++i) {
+		u64 l = strlen((char *) cstring[i]);
+		string s = { cstring[i], l };
+		result[i] = string_copy(s, arena);
+	}
+	return result;
 }

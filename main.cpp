@@ -13,7 +13,8 @@ draw_buffer_view(Buffer *buffer, Rect region)
 	draw_quad(region.from, region.size, Color::bg);
 
 	if (!buffer) {
-		string msg = S("[ no buffer open ]");
+		string cwd = editor.project_dir;
+		string msg = S("-- no file open --");
 
 		vec2 size = graphics_measure_text(msg);
 
@@ -23,6 +24,16 @@ draw_buffer_view(Buffer *buffer, Rect region)
 		};
 
 		draw_text(msg, p, Color::error);
+
+		size = graphics_measure_text(cwd);
+
+		p = {
+			region.from.x + (region.size.x - size.x) * 0.5f,
+			region.from.y + (region.size.y - size.y) * 0.5f + graphics_line_height(),
+		};
+
+		draw_text(cwd, p, Color::error);
+
 		return;
 	}
 
@@ -42,10 +53,7 @@ draw_buffer_view(Buffer *buffer, Rect region)
 	// gutter
 	//
 
-	u64 gutter_digits = 1;
-	for (u64 n = Max(lines.len, 1); n >= 10; n /= 10) {
-		gutter_digits += 1;
-	}
+	u64 gutter_digits = Max(digit_count_u64(lines.len), 2);
 
 	f32 gutter_pad   = digit_width;
 	f32 gutter_width = gutter_pad * 2 + digit_width * gutter_digits;
@@ -83,24 +91,29 @@ draw_buffer_view(Buffer *buffer, Rect region)
 			i + 1
 		);
 
+		if(current_line) {
+			draw_quad_rounded(
+				{region.from.x + gutter_pad, y},
+				{digit_width * gutter_digits, line_height},
+				5,
+				Color::dim
+			);
+		}
+
 		draw_text(
 			line_number,
 			{region.from.x + gutter_pad, y},
-			current_line ? Color::accent : Color::dim
+			current_line ? Color::bg : Color::dim
 		);
 
 		draw_text(line, {text_x, y}, Color::fg);
 
 		if (current_line && ed_mode() != Mode_Command) {
-			u64 cursor_offset =
-				buffer->cursor - cursor_range.begin;
+			u64 cursor_offset = buffer->cursor - cursor_range.begin;
 
-			string before_cursor =
-				slice(line, 0, cursor_offset);
+			string before_cursor = slice(line, 0, cursor_offset);
 
-			f32 cursor_x =
-				text_x +
-				graphics_measure_text(before_cursor).x;
+			f32 cursor_x = text_x + graphics_measure_text(before_cursor).x;
 
 			vec2 cursor_pos = {cursor_x, y};
 
@@ -146,8 +159,8 @@ draw_buffer_view(Buffer *buffer, Rect region)
 		s_fmt(MODE_STRING[editor.mode])
 	);
 
-	vec2 path_size =
-		graphics_measure_text(buffer->path);
+	string path = string_format(ed_frame_arena(), "%c%.*s", buffer->dirty ? '*': ' ', s_fmt(buffer->path));
+	vec2 path_size = graphics_measure_text(path);
 
 	draw_text(
 		mode_string,
@@ -156,20 +169,28 @@ draw_buffer_view(Buffer *buffer, Rect region)
 	);
 
 	draw_text(
-		buffer->path,
+		path,
 		{ region.from.x + region.size.x - path_size.x - 5, status_pos.y },
 		Color::bg
 	);
 }
 
-int main()
+int main(int argc, char **argv)
 {
 	ed_init();
-
+	defer(ed_deinit());
+	
 	graphics_init("text editor", 1280, 800, ed_persist_arnea());
+	defer(graphics_deinit());
 
 	u64 last_frame_time = platform_time_now();
 	f32 delta_time = 0;
+
+	Slice<string> args = string_list((u8 **) argv, (u64) argc, ed_frame_arena());
+	if (args.len > 1) {
+		string path = args[1];
+		ed_execute_cmd(open_buffer(path));
+	}
 
 	for (bool quit = false; !quit;)
 	{
@@ -224,4 +245,5 @@ int main()
 
 		arena_free(ed_frame_arena());
 	}
+
 }
