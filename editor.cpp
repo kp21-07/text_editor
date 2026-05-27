@@ -30,7 +30,7 @@ global struct Editor
 	Arena *persist_arena;
 	Arena *frame_arena;
 
-	Arena     *buffer_arena;
+	Arena     *project_arena;
 	Buffer    *free_buffers;
 } editor;
 
@@ -120,16 +120,10 @@ ed_init()
 
 	editor.persist_arena = arena_new(MB(8));
 	editor.frame_arena = arena_new(MB(8));
-	editor.buffer_arena = arena_new(KB(4));
+	editor.project_arena = arena_new(MB(8));
 
 	editor.mode = Mode_Normal;
-	{
-		bytes data = alloc_slice(ed_persist_arena(), u8, 1024);
-		string temp = platform_get_current_working_dir(ed_frame_arena());
-		memcpy(data.raw, temp.raw, temp.len);
-		editor.project_directory = string_from_bytes(data);
-		editor.project_directory.len = temp.len;
-	}
+	editor.project_directory = platform_get_current_working_dir(editor.project_arena);
 }
 
 
@@ -143,7 +137,7 @@ ed_deinit()
 		buf = next;
 	}
 
-    arena_delete(editor.buffer_arena);
+    arena_delete(editor.project_arena);
     arena_delete(editor.frame_arena);
     arena_delete(editor.persist_arena);
 
@@ -325,7 +319,7 @@ ed_execute_cmd(Ed_Cmd cmd)
 			buf = (Buffer *)editor.free_buffers;
 			editor.free_buffers = editor.free_buffers->next;
 		} else {
-			buf = alloc_struct(editor.buffer_arena, Buffer);
+			buf = alloc_struct(editor.project_arena, Buffer);
 		}
 		string path  = cmd.path;
 		string input = S("");
@@ -377,7 +371,7 @@ ed_execute_cmd(Ed_Cmd cmd)
 			buf = next;
 		}
 
-		arena_free(editor.buffer_arena);
+		arena_free(editor.project_arena);
 		editor.free_buffers = nullptr;
 		editor.buffers = nullptr;
 		editor.buffer_count = 0;
@@ -386,10 +380,7 @@ ed_execute_cmd(Ed_Cmd cmd)
 		if (cmd.path.len)
 		{
 			platform_change_current_working_directory(cmd.path);
-			string temp_path = platform_get_current_working_dir(ed_persist_arena());
-			assert(temp_path.len < 1024);
-			memcpy((void *) editor.project_directory.raw, temp_path.raw, temp_path.len);
-			editor.project_directory.len = temp_path.len;
+			editor.project_directory = platform_get_current_working_dir(editor.project_arena);
 		}
 	} break;
 

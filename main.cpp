@@ -12,9 +12,6 @@
 funcdef void
 draw_buffer_view(Buffer *buffer, Rect region)
 {
-	local_persist vec2 visual_cursor = {};
-	local_persist bool initialized = false;
-
 	graphics_push_clip(region, ed_frame_arena());
 	defer(graphics_pop_clip());
 
@@ -92,26 +89,8 @@ draw_buffer_view(Buffer *buffer, Rect region)
 			string before_cursor = slice(line, 0, cursor_offset);
 
 			f32 cursor_x = text_x + graphics_measure_text(before_cursor).x;
-
-			static vec2 visual_cursor = {};
-			static bool initialized = false;
-
 			vec2 target_cursor = {cursor_x, y};
-
-			if (!initialized) {
-				visual_cursor = target_cursor;
-				initialized = true;
-			}
-
-			f32 dt = graphics_delta_time();
-			f32 speed = 40.0f;
-
-			f32 t = 1.0f - expf(-speed * dt);
-
-			visual_cursor.x += (target_cursor.x - visual_cursor.x) * t;
-			visual_cursor.y += (target_cursor.y - visual_cursor.y) * t;
-
-			vec2 cursor_pos = visual_cursor;
+			vec2 cursor_pos = target_cursor;
 
 			if (ed_mode() != Mode_Insert) {
 				draw_capsule(
@@ -147,12 +126,13 @@ layout_panel_ui() {
 	const f32 status_height = graphics_line_height() + 4;
 
 	UI_Box *panel_box = nullptr;
+
 	UI(
-		.flags = UI_Invisible,
 		.size = {
 			{ Size_Fill, 1.0f },
 			{ Size_Fill, 1.0f }
 		},
+		.color = Color::bg
 	) {
 		auto buf = ed_active_buffer();
 		if (!buf) {
@@ -167,7 +147,7 @@ layout_panel_ui() {
 				.text = directory,
 				.align = Align_Center,
 			);
-			break;
+			continue;
 		}
 
 		panel_box = ui_current();
@@ -244,13 +224,27 @@ int main(int argc, char **argv)
 		defer(graphics_pop_clip());
 
 		{
-			ui_begin_frame(window_rect);
-			UI_Box *panel_box = layout_panel_ui();
+			ui_begin_frame(window_rect, 0, Layout_Row);
+
+			UI_Box *panel  = nullptr;
+
+			UI(
+				.flags = UI_Invisible,
+				.size = {
+					{ Size_Fill, 1.0f },
+					{ Size_Fill, 1.0f }
+				},
+				.layout = Layout_Col,
+			) {
+				panel = layout_panel_ui();
+			}
+
 			auto draw_list = ui_end_frame();
+
 			ui_draw_cmd_list(draw_list);
 
-			if (panel_box) {
-				draw_buffer_view(ed_active_buffer(), panel_box->rect);
+			if (panel) {
+				draw_buffer_view(ed_active_buffer(), panel->rect);
 			}
 		}
 
@@ -277,14 +271,23 @@ int main(int argc, char **argv)
 				.border = 1.0f,
 				.color = Color::bg,
 				.border_color = Color::cursor,
+				.layout = Layout_Row,
 			) {
+				f32 width = graphics_measure_text(cmd_string).x;
 				UI(
 					.size = {
-						{ Size_Fill, 1.0f },
+						{ Size_Fixed, width },
 						{ Size_Fill, 1.0f }
 					},
 					.color = Color::fg,
 					.text = cmd_string,
+				);
+				UI(
+					.size = {
+						{ Size_Fixed, 2 },
+						{ Size_Fill,  1.0f },
+					},
+					.color = Color::cursor,
 				);
 			}
 			UI(

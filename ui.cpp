@@ -112,7 +112,7 @@ ui_begin_frame(Rect rect, UI_Flags flags, UI_Layout layout, UI_Padding pad)
 	};
 	config.padding = pad;
 	config.layout  = layout;
-	config.color   = Color::bg;
+	config.color   = Hex(0x000000FF);
 	config.flags   = flags;
 
 	ui_set_config(config);

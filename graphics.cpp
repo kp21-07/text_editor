@@ -98,7 +98,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	);
 
 	RGFW_window_makeCurrentContext_OpenGL(win);
-	RGFW_window_swapInterval_OpenGL(win, 1);
+	RGFW_window_swapInterval_OpenGL(win, 0);
 	RGFW_window_setMinSize(win, 200, 200);
 
 	if (!gladLoadGLLoader((GLADloadproc)RGFW_getProcAddress_OpenGL)) {
@@ -320,7 +320,7 @@ graphics_update(Frame_Input *input)
 
 	if (RGFW_window_shouldClose(gfx.win)) return true;
 
-	// RGFW_waitForEvent(-1);
+	RGFW_waitForEvent(-1);
 	RGFW_event event = {0};
 	while (RGFW_window_checkEvent(gfx.win, &event)) {
 		switch (event.type) {
