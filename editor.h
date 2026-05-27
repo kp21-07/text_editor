@@ -338,6 +338,7 @@ funcdef bool graphics_update(Frame_Input *input);
 funcdef void graphics_submit_draw();
 funcdef vec2 graphics_resolution();
 funcdef f32  graphics_line_height();
+funcdef f32  graphics_delta_time();
 
 funcdef void graphics_push_clip(Rect rect, Arena *frame_alloc);
 funcdef Render_Clip graphics_pop_clip();
@@ -365,8 +366,8 @@ struct Time_Duration {
 
 funcdef bytes platform_load_entire_file(string path, Arena *allocator);
 funcdef bool platform_save_entire_file(string path, bytes data, Arena *scratch);
-funcdef bool platform_is_dir(string path);
-funcdef void platform_change_cwd(string dir);
+funcdef bool platform_is_directory(string path, Arena *scratch);
+funcdef void platform_change_current_working_directory(string dir);
 funcdef string platform_get_current_working_dir(Arena *allocator);
 
 funcdef u64 platform_time_now();
@@ -419,6 +420,100 @@ funcdef u64  buffer_line_at_index(Buffer *buffer, u64 array_index);
 funcdef Range_U64 buffer_line_range(Buffer *buffer, u64 line_index);
 
 //
+// ui.cpp
+//
+
+enum UI_Size_Kind : u32 {
+	Size_Fixed,  // arg: pixels
+	Size_Fit,    // arg: none
+	Size_Fill,   // arg: percent of left region
+	Size_Percent,// arg: percent total region
+};
+
+struct UI_Size_Axis {
+	UI_Size_Kind kind;
+	f32       value;
+};
+
+struct UI_Size {
+	UI_Size_Axis w, h;
+};
+
+struct UI_Padding {
+	u16 top, right, bottom, left;
+};
+#define Pad(n) (UI_Padding) { n, n, n, n }
+#define Pad_XY(x, y) (UI_Padding) { y, x, y, x }
+
+enum UI_Layout : u8 {
+	Layout_Col,
+	Layout_Row,
+};
+
+enum UI_Align : u8 {
+	Align_Start,
+	Align_Center,
+	Align_End,
+};
+
+typedef u32 UI_Flags;
+enum : u32 {
+	UI_Invisible    = 1 << 0,
+};
+
+struct UI_Config {
+	UI_Flags   flags;
+	UI_Size    size;
+	UI_Padding padding;
+
+	f32        radius;
+	f32        border;
+
+	u32        color;
+	u32        border_color;
+
+	string     text;
+
+	u16        gap;
+	UI_Layout  layout;
+	UI_Align   align;
+};
+
+struct UI_Box {
+	UI_Box   *parent;
+	UI_Box   *sibling;
+	UI_Box   *first;
+	UI_Box   *last;
+	UI_Config config;
+	Rect      rect;
+};
+
+struct UI_Draw {
+	Rect   rect;
+	f32    border;
+	f32    radius;
+	u32    color;
+	u32    border_color;
+	string text;
+	UI_Flags flags;
+	UI_Align align;
+};
+
+typedef Slice<UI_Draw> UI_Draw_List;
+
+funcdef void         ui_init(Arena *frame_arena);
+funcdef UI_Box      *ui_open();
+funcdef void         ui_set_config(UI_Config config);
+funcdef void         ui_close();
+funcdef void         ui_begin_frame(Rect rect, UI_Flags flags = 0, UI_Layout layout = Layout_Col, UI_Padding padding = Pad(0));
+funcdef UI_Draw_List ui_end_frame();
+funcdef UI_Box      *ui_current();
+funcdef void ui_draw_cmd_list(UI_Draw_List list);
+
+#define UI(...) for (UI_Box *_b = (ui_open(), ui_set_config(UI_Config{__VA_ARGS__}), (UI_Box *)1); _b; ui_close(), _b = 0)
+
+
+//
 // editor.cpp
 //
 
@@ -426,6 +521,7 @@ enum Ed_Mode {
 	Mode_Normal,
 	Mode_Insert,
 	Mode_Command,
+	Mode_Buffer_Search,
 	Mode_Count
 };
 
@@ -479,7 +575,7 @@ funcdef string ed_command_as_string();
 funcdef Ed_Error ed_execute_cmd(Ed_Cmd cmd);
 funcdef void ed_handle_error(Ed_Error error);
 
-funcdef Arena *ed_persist_arnea();
+funcdef Arena *ed_persist_arena();
 funcdef Arena *ed_frame_arena();
 
 // commands

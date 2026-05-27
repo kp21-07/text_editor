@@ -97,17 +97,35 @@ buffer_insert(Buffer *buffer, string s, Arena *scratch)
 			string data = string_from_bytes(slice_from_list(buffer->data));
 			string current_line = slice(data, line_range.begin, line_range.end);
 
-			u64 i=0;
-			while(i < current_line.len && is_space(current_line[i]))
+			u64 i = 0;
+			while (i < current_line.len && is_space(current_line[i])) {
 				i += 1;
+			}
 
 			string indents = slice(current_line, 0, i);
+
+			if (buffer->cursor > 0) {
+				char prev_char = buffer->data[buffer->cursor - 1];
+				Char_Kind prev_kind = char_kind(prev_char);
+
+				bool between_pair = false;
+
+				if (buffer->cursor < buffer->data.len) {
+					char next_char = buffer->data[buffer->cursor];
+					between_pair = (next_char == char_get_pair(prev_char));
+				}
+
+				if (prev_kind == Char_Open && !between_pair) {
+					indents = string_concat(S("\t"), indents, scratch);
+				}
+			}
 
 			s = string_concat(s, indents, scratch);
 		}
 		else if (kind == Char_Open || kind == Char_Quote) {
 			u8 close = (char) char_get_pair(c);
 			string close_str = { &close, 1 };
+			bool dont = false;
 			
 			if (buffer->cursor < buffer->data.len)
 			{
@@ -117,14 +135,18 @@ buffer_insert(Buffer *buffer, string s, Arena *scratch)
 				int width = 0;
 				rune under_cursor = utf8_decode(slice(data, buffer->cursor, data.len), &width);
 
+				dont = (char_kind(under_cursor) == Char_Word);
+
 				if (under_cursor == c && kind == Char_Quote) {
 					buffer_move_cursor(buffer, 1, Direction_Right);
 					return;
-				}
+				} 
 			}
-
-			s = string_concat(s, close_str, scratch);
-			move_left = true;
+	
+			if (!dont) {
+				s = string_concat(s, close_str, scratch);
+				move_left = true;
+			}
 		}
 		else if(kind == Char_Close) {
 			if (buffer->cursor < buffer->data.len) {

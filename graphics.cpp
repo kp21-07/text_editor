@@ -55,6 +55,9 @@ global struct {
 	f32 ascent, line_height;
 
 	Render_Clip *clip_stack;
+
+	f32          delta_time;
+	u64          last_update_time;
 } gfx;
 
 funcdef u32
@@ -95,7 +98,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	);
 
 	RGFW_window_makeCurrentContext_OpenGL(win);
-	RGFW_window_swapInterval_OpenGL(win, 0);
+	RGFW_window_swapInterval_OpenGL(win, 1);
 	RGFW_window_setMinSize(win, 200, 200);
 
 	if (!gladLoadGLLoader((GLADloadproc)RGFW_getProcAddress_OpenGL)) {
@@ -291,6 +294,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	glBindTexture(GL_TEXTURE_2D, gfx.textures[Texture_Font]);
 
 	gfx.win = win;
+	gfx.delta_time = 0.0f;
 }
 
 funcdef void
@@ -308,11 +312,15 @@ graphics_deinit()
 funcdef bool
 graphics_update(Frame_Input *input)
 {
+	u64 update_time = platform_time_now();
+	gfx.delta_time = (f32) platform_time_diff(gfx.last_update_time, update_time).seconds;
+	gfx.last_update_time = update_time;
+
 	RGFW_window_swapBuffers_OpenGL(gfx.win);
 
 	if (RGFW_window_shouldClose(gfx.win)) return true;
 
-	RGFW_waitForEvent(-1);
+	// RGFW_waitForEvent(-1);
 	RGFW_event event = {0};
 	while (RGFW_window_checkEvent(gfx.win, &event)) {
 		switch (event.type) {
@@ -342,10 +350,16 @@ graphics_update(Frame_Input *input)
 		}
 	}
 
-	glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	return false;
+}
+
+funcdef f32
+graphics_delta_time()
+{
+	return gfx.delta_time;
 }
 
 funcdef void
@@ -549,6 +563,12 @@ draw_text(string s, vec2 start_pos, u32 color)
 funcdef void
 draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color)
 {
+	if (radius <= 0.5f) 
+	{
+		draw_quad(pos, size, color);
+		return;
+	}
+
 	draw_quad({pos.x, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {127, 127}, {0, 0});
 	draw_quad({pos.x + size.x - radius, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {0, 127}, {127, 0});
 	draw_quad({pos.x + size.x - radius, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {0, 0}, {127, 127});

@@ -94,18 +94,24 @@ platform_save_entire_file(string path, bytes data, Arena *scratch)
 }
 
 funcdef bool
-platform_is_dir(string path)
+platform_is_directory(string path, Arena *scratch)
 {
+	Slice<char> cpath =  alloc_slice(scratch, char, path.len + 1);
+
+	memcpy(cpath.raw, path.raw, path.len);
+	cpath[path.len] = 0;
+
 	struct stat path_stat;
-	if (stat((const char*) path.raw, &path_stat) < 0) {
-		return -1;
+
+	if (stat(cpath.raw, &path_stat) < 0) {
+		return false;
 	}
 
 	return S_ISDIR(path_stat.st_mode);
 }
 
 funcdef void
-platform_change_cwd(string dir)
+platform_change_current_working_directory(string dir)
 {
 	if (!dir.raw || !dir.len) return;
 

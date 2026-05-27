@@ -9,20 +9,6 @@ const string MODE_STRING[Mode_Count] = {
 	S("command"),
 };
 
-typedef u32 Panel_Flags;
-enum Panel_Flag : Panel_Flags {
-	Panel_VSplit = 1 << 0, // HSplit otherwise
-};
-
-struct Panel {
-	Panel_Flags flags;	
-
-	Panel *parent;
-
-	Panel *child1;
-	Panel *chidl2;
-};
-
 global struct Editor
 {
 	Ed_Mode mode;
@@ -36,8 +22,7 @@ global struct Editor
 	u8      command[128];
 	u64     command_length;
 	
-	Panel *panel_tree;
-	string project_dir;
+	string project_directory;
 
 	/////////////////////
 	// ~geb: memory management
@@ -74,8 +59,13 @@ ed__parse_command(string cmd)
 		if (args.len > 0) {
 			path = args[0];
 			Ed_Cmd cmd;
-			if (platform_is_dir(path)) cmd = open_workspace(path);
-			else cmd = open_buffer(path);
+			
+			bool dir = platform_is_directory(path, ed_frame_arena());
+
+			if (dir) 
+				cmd = open_workspace(path);
+			else
+				cmd = open_buffer(path);
 
 			return cmd;
 		}
@@ -133,7 +123,13 @@ ed_init()
 	editor.buffer_arena = arena_new(KB(4));
 
 	editor.mode = Mode_Normal;
-	editor.project_dir = platform_get_current_working_dir(ed_persist_arnea());
+	{
+		bytes data = alloc_slice(ed_persist_arena(), u8, 1024);
+		string temp = platform_get_current_working_dir(ed_frame_arena());
+		memcpy(data.raw, temp.raw, temp.len);
+		editor.project_directory = string_from_bytes(data);
+		editor.project_directory.len = temp.len;
+	}
 }
 
 
@@ -179,6 +175,8 @@ ed_update(Frame_Input input)
 		case Mode_Normal: {
 			switch(c) {
 				case ':': ed_change_mode(Mode_Command); break;
+				case ' ': ed_change_mode(Mode_Buffer_Search); break;
+
 				case 'h': buffer_move_cursor(buf, 1, Direction_Left); break;
 				case 'l': buffer_move_cursor(buf, 1, Direction_Right); break;
 				case 'j': buffer_move_cursor(buf, 1, Direction_Down); break;
@@ -223,6 +221,10 @@ ed_update(Frame_Input input)
 					ed_change_mode(Mode_Insert);
 				} break;
 			}
+		} break;
+
+		case Mode_Buffer_Search:
+		{
 		} break;
 
 		case Mode_Command: 
@@ -383,8 +385,11 @@ ed_execute_cmd(Ed_Cmd cmd)
 
 		if (cmd.path.len)
 		{
-			platform_change_cwd(cmd.path);
-			editor.project_dir = platform_get_current_working_dir(ed_persist_arnea());
+			platform_change_current_working_directory(cmd.path);
+			string temp_path = platform_get_current_working_dir(ed_persist_arena());
+			assert(temp_path.len < 1024);
+			memcpy((void *) editor.project_directory.raw, temp_path.raw, temp_path.len);
+			editor.project_directory.len = temp_path.len;
 		}
 	} break;
 
@@ -555,7 +560,7 @@ ed_handle_error(Ed_Error error)
 
 
 funcdef Arena *
-ed_persist_arnea()
+ed_persist_arena()
 {
 	return editor.persist_arena;
 }
