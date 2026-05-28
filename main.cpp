@@ -1,13 +1,12 @@
-#include "alloc.cpp"
 #include "editor.h"
-#include "string.cpp"
-#include "buffer.cpp"
-#include "graphics.cpp"
-#include "platform.cpp"
-#include "editor.cpp"
-#include "ui.cpp"
-
 #include "config.h"
+
+const string MODE_STRING[Mode_Count] = {
+	S("normal"),
+	S("insert"),
+	S("command"),
+	S("buffer search")
+};
 
 funcdef void
 draw_buffer_view(Buffer *buffer, Rect region)
@@ -19,7 +18,9 @@ draw_buffer_view(Buffer *buffer, Rect region)
 	f32 digit_width = graphics_char_width('0');
 	f32 space_width = graphics_char_width(' ');
 
-	Slice<string> lines = buffer_as_lines(buffer, ed_frame_arena());
+	string buf_string = string_from_bytes(slice_from_list(buffer->data));
+	Slice<Line> buffer_lines = slice_from_list(buffer->lines);
+
 
 	u64 cursor_line = buffer_line_at_index(buffer, buffer->cursor);
 	Range_U64 cursor_range = buffer_line_range(buffer, cursor_line);
@@ -28,7 +29,7 @@ draw_buffer_view(Buffer *buffer, Rect region)
 	// gutter
 	//
 
-	u64 gutter_digits = Max(digit_count_u64(lines.len), 2);
+	u64 gutter_digits = Max(digit_count_u64(buffer_lines.len), 2);
 
 	f32 gutter_pad   = digit_width;
 	f32 gutter_width = gutter_pad * 2 + digit_width * gutter_digits;
@@ -41,12 +42,13 @@ draw_buffer_view(Buffer *buffer, Rect region)
 
 	f32 y = region.from.y;
 
-	for (u64 i = 0; i < lines.len; ++i) {
+	for (u64 i = 0; i < buffer_lines.len; ++i) {
 		if (y > region.from.y + region.size.y) {
 			break;
 		}
 
-		string line = lines[i];
+		Range_U64 range = buffer_line_range(buffer, i);
+		string line = slice(buf_string, range.begin, range.end);
 
 		bool current_line = (i == cursor_line);
 
@@ -116,7 +118,6 @@ draw_buffer_view(Buffer *buffer, Rect region)
 				);
 			}
 		}
-
 		y += line_height;
 	}
 }
@@ -136,7 +137,7 @@ layout_panel_ui() {
 	) {
 		auto buf = ed_active_buffer();
 		if (!buf) {
-			string directory = editor.project_directory;
+			string directory = ed_project_dir();
 
 			UI(
 				.size = {
@@ -190,7 +191,7 @@ layout_panel_ui() {
 	return panel_box;
 }
 
-int main(int argc, char **argv)
+void entry_point(Slice<string> args)
 {
 	ed_init();
 	ui_init(ed_frame_arena());
@@ -198,7 +199,6 @@ int main(int argc, char **argv)
 
 	u64 last_frame_time = platform_time_now();
 
-	Slice<string> args = string_list((u8 **) argv, (u64) argc, ed_frame_arena());
 	if (args.len > 1) {
 		string path = args[1];
 
@@ -249,21 +249,15 @@ int main(int argc, char **argv)
 		}
 
 		if (ed_mode() == Mode_Command) {
+			ui_begin_frame(window_rect, 0, Layout_Row, Pad_XY(0, 100), Hex(0x00000066));
 			const f32 status_height = graphics_line_height() + 4;
-			ui_begin_frame(window_rect, UI_Invisible, Layout_Row, Pad_XY(0, 100));
 
 			string cmd_string = ed_command_as_string();
 			cmd_string = string_format(ed_frame_arena(), ":%.*s", s_fmt(cmd_string));
-			UI(
-				.flags = UI_Invisible,
-				.size = {
-					{Size_Fill, 1.0},
-					{Size_Fill, 1.0},
-				},
-			);
+			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
 			UI(
 				.size = {
-					{ Size_Fill, 2.0f },
+					{ Size_Fill, 1.0f },
 					{ Size_Fixed, status_height }
 				},
 				.padding = Pad(2),
@@ -290,13 +284,39 @@ int main(int argc, char **argv)
 					.color = Color::cursor,
 				);
 			}
+			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
+
+			auto draw_list = ui_end_frame();
+			ui_draw_cmd_list(draw_list);
+		} else if (ed_mode() == Mode_Buffer_Search) {
+			ui_begin_frame(window_rect, 0, Layout_Row, Pad_XY(0, 100), Hex(0x00000066));
+
+			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
 			UI(
-				.flags = UI_Invisible,
 				.size = {
-					{Size_Fill, 1.0},
-					{Size_Fill, 1.0},
+					{ Size_Fill, 1.0f },
+					{ Size_Fill, 1.0f }
+				},
+				.padding = Pad(5),
+				.radius = 10,
+				.border = 1.0f,
+				.color = Color::bg,
+				.border_color = Color::cursor,
+				.layout = Layout_Col,
+			) {
+				Buffer *buf = ed_buffer_list();
+				for(;buf; buf = buf->next) {
+					UI(
+						.size = {
+							{ Size_Fill, 1.0f },
+							{ Size_Fixed, graphics_line_height() }
+						},
+						.color = Color::accent,
+						.text = buf->path,
+					);
 				}
-			);
+			}
+			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
 
 			auto draw_list = ui_end_frame();
 			ui_draw_cmd_list(draw_list);

@@ -34,6 +34,8 @@ static_assert(sizeof(f64) == 8, "float32 size missmatch");
 
 #define generic(...) template<typename __VA_ARGS__>
 
+#define FlagCheck(__flags, __mask) !!((__flags) & (__mask))
+
 generic(T) struct Slice {
 	T   *raw;
 	u64  len;
@@ -141,21 +143,21 @@ digit_count_u64(u64 n) {
 /////////////////////////////////////////////////////////////////////////////////////
 // ~geb: cursed defer from gb.h
 
-template <typename T> struct RemoveReference       { typedef T Type; };
-template <typename T> struct RemoveReference<T &>  { typedef T Type; };
-template <typename T> struct RemoveReference<T &&> { typedef T Type; };
+generic(T) struct RemoveReference       { typedef T Type; };
+generic(T) struct RemoveReference<T &>  { typedef T Type; };
+generic(T) struct RemoveReference<T &&> { typedef T Type; };
 
-template <typename T> inline T &&forward(typename RemoveReference<T>::Type &t)  { return static_cast<T &&>(t); }
-template <typename T> inline T &&forward(typename RemoveReference<T>::Type &&t) { return static_cast<T &&>(t); }
-template <typename T> inline T &&move   (T &&t)                                 { return static_cast<typename RemoveReference<T>::Type &&>(t); }
+generic(T) inline T &&forward(typename RemoveReference<T>::Type &t)  { return static_cast<T &&>(t); }
+generic(T) inline T &&forward(typename RemoveReference<T>::Type &&t) { return static_cast<T &&>(t); }
+generic(T) inline T &&move   (T &&t)                                 { return static_cast<typename RemoveReference<T>::Type &&>(t); }
 
-template <typename F>
+generic(F)
 struct DeferImpl {
     F f;
     DeferImpl(F &&f) : f(forward<F>(f)) {}
     ~DeferImpl() { f(); }
 };
-template <typename F> DeferImpl<F> defer_func(F &&f) { return DeferImpl<F>(forward<F>(f)); }
+generic(F) DeferImpl<F> defer_func(F &&f) { return DeferImpl<F>(forward<F>(f)); }
 
 #define TOKEN_PASTE(a, b) a##b
 #define DEFER_NAME(base, line) TOKEN_PASTE(base, line)
@@ -278,16 +280,18 @@ enum Char_Kind {
 };
 
 funcdef string string_format(Arena *arena, const char *fmt, ...);
-funcdef u64 string_count_lines(string s);
-funcdef u64 string_column_count(string s, int indent_width = 4);
+funcdef u64    string_count_lines(string s);
+funcdef u64    string_column_count(string s, int indent_width = 4);
 funcdef string string_concat(string a, string b, Arena *arena);
-funcdef u64 string_find_first(string s, rune r);
-funcdef u64 string_find_last(string s, rune r);
+funcdef u64    string_find_first(string s, rune r);
+funcdef u64    string_find_last(string s, rune r);
 funcdef string string_strip(string s);
+
 funcdef Slice<string> string_split(string original, Arena *arena);
-funcdef bool string_equal(string a, string b);
-funcdef string string_copy(string str, Arena *arena);
+funcdef bool          string_equal(string a, string b);
+funcdef string        string_copy(string str, Arena *arena);
 funcdef Slice<string> string_list(u8 **cstring, u64 len, Arena *arena);
+funcdef string        string_to_cstring(string s, Arena *arena) ;
 
 funcdef Char_Kind char_kind(rune r);
 funcdef rune   char_get_pair(rune r);
@@ -364,10 +368,53 @@ struct Time_Duration {
 	f64 microseconds;
 };
 
-funcdef bytes platform_load_entire_file(string path, Arena *allocator);
-funcdef bool platform_save_entire_file(string path, bytes data, Arena *scratch);
-funcdef bool platform_is_directory(string path, Arena *scratch);
-funcdef void platform_change_current_working_directory(string dir);
+typedef u32 File_Flags;
+enum File_Flag : File_Flags {
+	File_Directory   = 1 << 0,
+	File_Executable  = 1 << 1,
+	File_Hidden      = 1 << 2,
+	File_Symlink     = 1 << 3,
+	File_Readable    = 1 << 4,
+	File_Writable    = 1 << 5,
+	File_Device      = 1 << 6,
+	File_Pipe        = 1 << 7,
+	File_Socket      = 1 << 8,
+};
+
+struct File_Info {
+	u64        size;
+	File_Flags flags;
+};
+
+enum Load_Error {
+	Load_Ok,
+	Load_Not_Found,
+	Load_Access_Denied,
+	Load_Invalid_Path,
+	Load_IO_Error, // for all other type of errors
+	Load_Buffer_Overflow,
+	Load_Error_Count,
+};
+
+global string load_err_string[Load_Error_Count] = {
+	S("success"),
+	S("not found"),
+	S("access denied"),
+	S("invalid path"),
+	S("io error"),
+	S("buffer overflow"),
+};
+
+funcdef Load_Error platform_file_info(string path, File_Info *info, Arena *scratch);
+
+funcdef Load_Error platform_file_to_buffer(string path, u8 *ptr, u64 len, Arena *scratch);
+funcdef bytes platform_load_entire_file(string path, Arena *arena, Arena *scratch);
+funcdef bool  platform_save_entire_file(string path, bytes data, Arena *scratch);
+
+funcdef string platform_path_canonical(Arena *arena, string path);
+funcdef bool   platform_is_directory(string path, Arena *scratch);
+
+funcdef void   platform_set_current_working_directory(string dir);
 funcdef string platform_get_current_working_dir(Arena *allocator);
 
 funcdef u64 platform_time_now();
@@ -409,13 +456,13 @@ enum Direction {
 	Direction_Down,
 };
 
+funcdef Load_Error buffer_make(Buffer *buffer, string path, Arena *scratch);
 funcdef void buffer_make(Buffer *buffer, u64 data_cap, u64 line_count, string path);
 funcdef void buffer_deinit(Buffer *buffer);
 funcdef void buffer_insert(Buffer *buffer, string s, Arena *scratch);
 funcdef void buffer_delete(Buffer *buffer, u64 count, Direction dir);
 funcdef void buffer_move_cursor(Buffer *buffer, u64 count, Direction dir);
 funcdef void buffer_move_cursor_to(Buffer *buffer, u64 index);
-funcdef Slice<string> buffer_as_lines(Buffer *buffer, Arena *allocator);
 funcdef u64  buffer_line_at_index(Buffer *buffer, u64 array_index);
 funcdef Range_U64 buffer_line_range(Buffer *buffer, u64 line_index);
 
@@ -505,10 +552,10 @@ funcdef void         ui_init(Arena *frame_arena);
 funcdef UI_Box      *ui_open();
 funcdef void         ui_set_config(UI_Config config);
 funcdef void         ui_close();
-funcdef void         ui_begin_frame(Rect rect, UI_Flags flags = 0, UI_Layout layout = Layout_Col, UI_Padding padding = Pad(0));
+funcdef void         ui_begin_frame(Rect rect, UI_Flags flags = 0, UI_Layout layout = Layout_Col, UI_Padding padding = Pad(0), u32 color = Hex(0x000000FF));
 funcdef UI_Draw_List ui_end_frame();
 funcdef UI_Box      *ui_current();
-funcdef void ui_draw_cmd_list(UI_Draw_List list);
+funcdef void         ui_draw_cmd_list(UI_Draw_List list);
 
 #define UI(...) for (UI_Box *_b = (ui_open(), ui_set_config(UI_Config{__VA_ARGS__}), (UI_Box *)1); _b; ui_close(), _b = 0)
 
@@ -570,7 +617,10 @@ funcdef bool ed_update(Frame_Input input);
 funcdef void ed_change_mode(Ed_Mode mode);
 funcdef Buffer *ed_active_buffer();
 funcdef Ed_Mode ed_mode();
+
 funcdef string ed_command_as_string();
+funcdef string ed_project_dir();
+funcdef Buffer *ed_buffer_list();
 
 funcdef Ed_Error ed_execute_cmd(Ed_Cmd cmd);
 funcdef void ed_handle_error(Ed_Error error);

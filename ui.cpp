@@ -100,7 +100,7 @@ ui_close()
 }
 
 funcdef void
-ui_begin_frame(Rect rect, UI_Flags flags, UI_Layout layout, UI_Padding pad)
+ui_begin_frame(Rect rect, UI_Flags flags, UI_Layout layout, UI_Padding pad, u32 color)
 {
 	UI_Box *root = ui_open();
 	root->rect = rect;
@@ -112,7 +112,7 @@ ui_begin_frame(Rect rect, UI_Flags flags, UI_Layout layout, UI_Padding pad)
 	};
 	config.padding = pad;
 	config.layout  = layout;
-	config.color   = Hex(0x000000FF);
+	config.color   = color;
 	config.flags   = flags;
 
 	ui_set_config(config);

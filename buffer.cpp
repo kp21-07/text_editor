@@ -61,6 +61,48 @@ buffer__index_from_column(string s, u64 target_column)
 }
 
 
+funcdef Load_Error
+buffer_make(Buffer *buffer, string path, Arena *scratch)
+{
+	MemZeroStruct(buffer);
+
+	buffer->arena = arena_new(GB(1));
+	buffer->path = string_copy(path, buffer->arena);
+
+	Load_Error err = Load_Ok;
+	{
+		File_Info info = {};
+		err = platform_file_info(path, &info, scratch);
+		if (err != Load_Ok) {
+			buffer_deinit(buffer);
+			buffer_make(buffer, KB(512), 2048, path);
+			return err;
+		}
+
+		bytes data = alloc_slice(buffer->arena, u8, Max(info.size * 2, KB(512)));
+		err = platform_file_to_buffer(path, data.raw, data.len, scratch);
+		if (err != Load_Ok) {
+			buffer_deinit(buffer);
+			buffer_make(buffer, KB(512), 2048, path);
+			return err;
+		}
+
+		buffer->data = List<u8> {
+			data.raw,
+			info.size,
+			data.len
+		};
+	}
+
+	string buf_string = string_from_bytes(slice_from_list(buffer->data));
+
+	u64 line_count = Max((string_count_lines(buf_string) * 2), 2048);
+	buffer->lines = list_from_buffer(alloc_slice(buffer->arena, Line, line_count));
+	buffer__build_lines(buffer);
+
+	return err;
+}
+
 funcdef void
 buffer_make(Buffer *buffer, u64 data_cap, u64 line_count, string path)
 {
@@ -142,7 +184,7 @@ buffer_insert(Buffer *buffer, string s, Arena *scratch)
 					return;
 				} 
 			}
-	
+
 			if (!dont) {
 				s = string_concat(s, close_str, scratch);
 				move_left = true;
@@ -359,29 +401,6 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
 	buffer->dirty = true;
 }
 
-funcdef Slice<string>
-buffer_as_lines(Buffer *buffer, Arena *allocator)
-{
-	if (!buffer) return {};
-
-	Slice<string> lines = alloc_slice(allocator, string, buffer->lines.len);
-	bytes data = slice_from_list(buffer->data);
-
-	for (u64 i=0; i<buffer->lines.len; ++i)
-	{
-		u64 begin = 0;
-		if (i != 0) {
-			begin = buffer->lines[i - 1].index + 1;
-		}
-		u64 end = buffer->lines[i].index;
-
-		string line_string = string_from_bytes(slice(data, begin, end));
-		lines[i] = line_string;
-	}
-
-	return lines;
-}
-
 funcdef Range_U64
 buffer_line_range(Buffer *buffer, u64 line_index)
 {
@@ -396,7 +415,8 @@ buffer_line_range(Buffer *buffer, u64 line_index)
 
 	u64 end = buffer->lines[line_index].index;
 	u64 begin = 0;
-	if (line_index != 0) begin = buffer->lines[line_index - 1].index + 1;
+	if (line_index != 0)
+		begin = buffer->lines[line_index - 1].index + 1;
 	return Range_U64 { begin, end };
 }
 

@@ -197,7 +197,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"   if (v_texid == 0u) { pixel = texture(u_textures[0], v_uv); }"
 			"   else               { pixel = texture(u_textures[1], v_uv); }"
 			"   float dist = length(v_circ);"
-			"   float aa = fwidth(dist) * 0.5;"
+			"   float aa = fwidth(dist);"
 			"   float mask = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, dist);"
 			"   Frag_Color = v_color * pixel;"
 			"   Frag_Color.a *= mask;"

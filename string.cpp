@@ -473,3 +473,14 @@ string_list(u8 **cstring, u64 len, Arena *arena)
 	}
 	return result;
 }
+
+funcdef string
+string_to_cstring(string s, Arena *arena) 
+{
+	bytes data = alloc_slice(arena, u8, s.len + 1);
+	assert(data.len > 0);
+	memcpy(data.raw, s.raw, s.len);
+	data[s.len] = 0;
+
+	return string_from_bytes(data);
+}

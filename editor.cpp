@@ -1,13 +1,6 @@
 #include "editor.h"
 #include "config.h"
 
-#include <stdio.h>
-
-const string MODE_STRING[Mode_Count] = {
-	S("normal"),
-	S("insert"),
-	S("command"),
-};
 
 global struct Editor
 {
@@ -219,6 +212,14 @@ ed_update(Frame_Input input)
 
 		case Mode_Buffer_Search:
 		{
+			u32 key_flags = input.key_flags;
+			u8 input_char = (u8) c;
+
+			if (key_flags & key_Escape) {
+				editor.mode = Mode_Normal;
+				editor.command_length = 0;
+				break;
+			}
 		} break;
 
 		case Mode_Command: 
@@ -301,6 +302,19 @@ ed_command_as_string()
 }
 
 
+funcdef string
+ed_project_dir()
+{
+	return editor.project_directory;
+}
+
+
+funcdef Buffer *
+ed_buffer_list()
+{
+	return editor.buffers;
+}
+
 funcdef Ed_Error
 ed_execute_cmd(Ed_Cmd cmd)
 {
@@ -314,22 +328,33 @@ ed_execute_cmd(Ed_Cmd cmd)
 	case Cmd_None: break;
 
 	case Cmd_Buffer_Open: {
-		Buffer *buf;
+		string path    = cmd.path;
+		string canonical = platform_path_canonical(ed_frame_arena(), path);
+		Arena *scratch = ed_frame_arena();
+		Buffer *buf    = editor.buffers;
+
+		u64 pos = scratch->used;
+		for (; buf; buf = buf->next) {
+			string buf_canonical = platform_path_canonical(scratch, buf->path);
+			bool match = string_equal(buf_canonical, canonical);
+			arena_free(scratch, pos);
+
+			if (!match) continue;
+			editor.active_buffer = buf;
+			return error;
+		}
+		buf = nullptr;
 		if (editor.free_buffers) {
 			buf = (Buffer *)editor.free_buffers;
 			editor.free_buffers = editor.free_buffers->next;
 		} else {
 			buf = alloc_struct(editor.project_arena, Buffer);
 		}
-		string path  = cmd.path;
-		string input = S("");
-		if (path.len) input = string_from_bytes(platform_load_entire_file(path, editor.frame_arena));
-		buffer_make(buf, Max(input.len * 2, KB(512)), Max(string_count_lines(input) * 2, 2048), path);
+		buffer_make(buf, path, ed_frame_arena());
 		buf->next = editor.buffers;
 		editor.buffers = buf;
 		editor.buffer_count += 1;
 		editor.active_buffer = buf;
-		buffer_insert(buf, input, ed_frame_arena());
 		buf->cursor = 0;
 		buf->dirty = false;
 	} break;
@@ -339,7 +364,10 @@ ed_execute_cmd(Ed_Cmd cmd)
 		if (!path.len) {
 			if (!editor.active_buffer) break;
 			path = editor.active_buffer->path;
-			if (!path.len) { error.kind = Ed_Error_Invalid_Argument; break; }
+			if (!path.len) {
+				error.kind = Ed_Error_Invalid_Argument;
+				break;
+			}
 		}
 		Buffer *last = nullptr;
 		for (Buffer *buf = editor.buffers; buf; last = buf, buf = buf->next) {
@@ -379,7 +407,7 @@ ed_execute_cmd(Ed_Cmd cmd)
 
 		if (cmd.path.len)
 		{
-			platform_change_current_working_directory(cmd.path);
+			platform_set_current_working_directory(cmd.path);
 			editor.project_directory = platform_get_current_working_dir(editor.project_arena);
 		}
 	} break;
