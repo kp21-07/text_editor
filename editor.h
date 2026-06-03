@@ -325,6 +325,18 @@ funcdef string os_path_canonical(Arena *arena, string path);
 //////////////
 // ~gaureesh @NOTE: string
 
+enum CharKind {
+	Char_Open,
+	Char_Quote,
+	Char_Close,
+	Char_Symbol,
+	Char_Number,
+	Char_Letter,
+};
+
+funcdef CharKind char_kind(rune r);
+funcdef rune     char_get_pair(rune r);
+
 funcdef s64    string_to_int(string s, bool *ok);
 funcdef string string_strip(string s);
 funcdef string string_copy(Arena *arena, string s);
@@ -525,6 +537,8 @@ funcdef string     buffer_slice(Buffer *buffer, Arena *arena, Range_u64 rang);
 funcdef void       buffer_insert(Buffer *buffer, string s);
 funcdef void       buffer_delete(Buffer *buffer, u64 count, Direction direction);
 funcdef void       buffer_move_cursor(Buffer *buf, u64 amount, Direction dir);
+funcdef rune       buffer_char_at(Buffer *buf, s64 index);
+funcdef u64        buffer_cursor(Buffer *buf);
 
 struct Buffer_Map {
 	slice<Buffer> table;

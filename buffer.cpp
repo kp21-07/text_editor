@@ -30,7 +30,6 @@ buffer__sync_desired_column(Buffer *buffer)
 	buffer->desired_col = string_column_count(line_str, TAB_WIDTH);
 }
 
-
 funcdef u64
 buffer__index_from_column(string s, u64 target_column)
 {
@@ -295,9 +294,34 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
 	}
 }
 
+funcdef rune
+buffer_char_at(Buffer *buf, s64 index)
+{
+	if (!buf)
+		return 0;
+
+	if (index >= buf->data.len || index < 0)
+		return 0;
+
+	int width = 0;
+	return utf8_decode(buf->data.view().range(index, buf->data.len), &width);
+}
+
+
+funcdef u64 
+buffer_cursor(Buffer *buf)
+{
+	if (!buf)
+		return 0;
+
+	return buf->cursor;
+}
 
 funcdef string
 buffer_slice(Buffer *buffer, Arena *arena, Range_u64 range) {
+	if (!buffer)
+		return S("");
+
 	string view = buffer->data.view().range(range.begin, range.end);
 	return string_copy(arena, view);
 }

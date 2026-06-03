@@ -1,5 +1,39 @@
 #include "editor.h"
 
+funcdef CharKind
+char_kind(rune r) {
+    switch (r) {
+        case '(': case '[': case '{':
+            return Char_Open;
+        case '"': case '\'': case '`':
+            return Char_Quote;
+        case ')': case ']': case '}':
+            return Char_Close;
+        default:
+			if (r >= '0' && r <= '9')
+				return Char_Number;
+            if ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r > 127)
+                return Char_Letter;
+            return Char_Symbol;
+    }
+}
+
+
+rune char_get_pair(rune r)
+{
+    switch (r) {
+    case '(': return ')';
+    case '[': return ']';
+    case '{': return '}';
+    case ')': return '(';
+    case ']': return '[';
+    case '}': return '{';
+    case '"': return '"';
+    case '\'': return '\'';
+    case '`': return '`';
+    default:  return '0';
+    }
+}
 
 funcdef s64
 string_to_int(string s, bool *ok)

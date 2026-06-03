@@ -12,24 +12,64 @@ enum UI_Classes {
 
 
 funcdef string
-format_user_input(rune codepoint, Arena *frame_alloc)
+format_user_input(rune codepoint, Arena *frame_arena, Ed_Cmd *post)
 {
 	if (codepoint == '\n') {
-
 		Buffer *buf = ed_active();
 		u64 line_index = buffer_line_index_at(buf, buf->cursor);
 		Range_u64 range = buffer_line_range(buf, line_index);
 		range.end = Min(range.end, buf->cursor);
-		string line = buffer_slice(buf, frame_alloc, range);
+		string line = buffer_slice(buf, frame_arena, range);
 
 		u64 i=0;
 		for (;i<line.len && is_space(line[i]); ++i)
 			;
 
-		return string_concat(frame_alloc, S("\n"), line.range(0, i));
+		rune before = buffer_char_at(ed_active(), buffer_cursor(ed_active()) - 1);
+		rune after = buffer_char_at(ed_active(), buffer_cursor(ed_active()));
+
+		string result = string_concat(frame_arena, S("\n"), line.range(0, i));
+
+		if (char_kind(before) == Char_Open) {
+			bool between_pair = (char_get_pair(before) == after);
+
+			if (!between_pair) {
+				result = string_concat(frame_arena, result, S("\t"));
+			}
+		}
+
+		return result;
 	}
 	else if(codepoint == '\t' || unicode_visual_rune(codepoint)) {
-		return utf8_encode(codepoint, frame_alloc);
+		CharKind kind = char_kind(codepoint);
+		rune at_cursor = buffer_char_at(ed_active(), buffer_cursor(ed_active()));
+
+		if (kind == Char_Open) {
+			if (is_space(at_cursor) || 
+				char_kind(at_cursor) != Char_Open) {
+				rune pair = char_get_pair(codepoint);
+				*post = move_cursor(Direction::Left, 1);
+
+				string left = utf8_encode(codepoint, frame_arena);
+				string right = utf8_encode(pair, frame_arena);
+				return string_concat(frame_arena, left, right);
+			}
+		}
+		else if (kind == Char_Close || kind == Char_Quote) {
+			if (at_cursor == codepoint) {
+				*post = move_cursor(Direction::Right, 1);
+				return {};
+			}
+			if (kind == Char_Quote) {
+				rune pair = char_get_pair(codepoint);
+				*post = move_cursor(Direction::Left, 1);
+				string left = utf8_encode(codepoint, frame_arena);
+				string right = utf8_encode(pair, frame_arena);
+				return string_concat(frame_arena, left, right);
+			}
+		}
+
+		return utf8_encode(codepoint, frame_arena);
 	}
 	return {};
 }
@@ -286,11 +326,13 @@ void entry_point(slice<string> args)
 				} break;
 
 				default: {
-					string fmt = format_user_input(input.codepoint, frame_arena());
+					Ed_Cmd post = {};
+					string fmt = format_user_input(input.codepoint, frame_arena(), &post);
 					if (fmt.len) {
 						Ed_Cmd cmd = insert_string(fmt);
 						ed_exec_command(cmd);
 					}
+					ed_exec_command(post);
 				} break;
 			}
 		}

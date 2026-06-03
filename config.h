@@ -3,7 +3,7 @@
 
 #include "editor.h"
 
-const f32 FONT_HEIGHT = 22.0f;
+const f32 FONT_HEIGHT = 32.0f;
 const u64 TAB_WIDTH   = 2;
 
 struct Color {
