@@ -1,16 +1,10 @@
 #include "editor.h"
+#include "config.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
-#define RGFW_IMPLEMENTATION
-#define RGFW_OPENGL
-#define RGFW_NO_X11_CURSOR
 
 #include "vendor/glad.h"
-#include "vendor/glad.c"
-#include "vendor/rgfw.h"
 #include "vendor/stb_truetype.h"
-
-#include "config.h"
 
 #define ATLAS_SIZE   512
 #define FIRST_CHAR   32
@@ -18,6 +12,9 @@
 #define MAX_VERTICES 4098
 
 #define MAX_U16 65535
+
+funcdef u32 gfx__compile_shader(int type, string src);
+funcdef Rect gfx__rect_intersect(Rect a, Rect b);
 
 enum {
 	Uniform_Resolution,
@@ -29,20 +26,19 @@ struct Vertex {
 	struct { s16 x, y; } pos;
 	struct { u16 u, v; } uv;   // normalized [0, MAX_U16] maps to [0.0, 1.0]
 	u32 color;
-	u8 tex_id;
-	u8 draw_layer;
+	u16 tex_id;
 	struct { s8 x, y; } circle; 
 	struct { u16 x0, y0, x1, y1; } clip;
 };
 
-const u64 vertex_size = sizeof(Vertex);
+static struct  {
+	Arena *persist;
 
-global struct {
-	RGFW_window *win;
+	OS_TimeStamp last_frame_time;
+	f32 delta_time;
 
-	List<Vertex> vertices;
-	List<u16>    indices;
-	u8 draw_layer;
+	list<Vertex> vertices;
+	list<u16>    indices;
 
 	u32 vao, vbo, ebo;
 	u32 program;
@@ -55,77 +51,39 @@ global struct {
 	f32 ascent, line_height;
 
 	Render_Clip *clip_stack;
-
-	f32          delta_time;
-	u64          last_update_time;
-} gfx;
-
-funcdef u32
-graphics__compile_shader(int type, string src)
-{
-	u32 id = glCreateShader(type);
-
-	const char *cstr = (char *)src.raw;
-	int len = (int)src.len;
-
-	glShaderSource(id, 1, &cstr, &len);
-	glCompileShader(id);
-
-	int success;
-	glGetShaderiv(id, GL_COMPILE_STATUS, &success);
-
-	if (!success) {
-		char log[1024];
-		glGetShaderInfoLog(id, sizeof(log), 0, log);
-		printf("Shader compile error:\n%s\n", log);
-		return 0;
-	}
-
-	return id;
-}
+} gfx_ctx;
 
 funcdef void
-graphics_init(const char *title, int width, int height, Arena *persist)
+gfx_init(OS_Handle window, Arena *persist)
 {
-	RGFW_glHints *hints = RGFW_getGlobalHints_OpenGL();
-	hints->major = 3;
-	hints->minor = 3;
-	RGFW_setGlobalHints_OpenGL(hints);
-
-	RGFW_window *win = RGFW_createWindow(
-		title, 0, 0, width, height,
-		RGFW_windowCenter | RGFW_windowAllowDND | RGFW_windowOpenGL
-	);
-
-	RGFW_window_makeCurrentContext_OpenGL(win);
-	RGFW_window_swapInterval_OpenGL(win, 0);
-	RGFW_window_setMinSize(win, 200, 200);
-
-	if (!gladLoadGLLoader((GLADloadproc)RGFW_getProcAddress_OpenGL)) {
+	if (!gladLoadGLLoader((GLADloadproc)os_get_gl_proc_address())) {
 		fprintf(stderr, "failed to load opengl");
 		return;
 	}
 
-	gfx.draw_layer = Draw_Layer_Base;
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	
+	gfx_ctx.persist = persist;
 
 	////////////// opengl renderer setup //////////////
 
 	auto vertex_buf  = alloc_slice(persist, Vertex, MAX_VERTICES);
-	gfx.vertices     = list_from_buffer(vertex_buf);
+	gfx_ctx.vertices = list_make(vertex_buf);
 
 	auto index_buf   = alloc_slice(persist, u16, MAX_VERTICES);
-	gfx.indices      = list_from_buffer(index_buf);
+	gfx_ctx.indices  = list_make(index_buf);
 
-	glGenVertexArrays(1, &gfx.vao);
-	glGenBuffers(1, &gfx.vbo);
-	glGenBuffers(1, &gfx.ebo);
+	glGenVertexArrays(1, &gfx_ctx.vao);
+	glGenBuffers(1, &gfx_ctx.vbo);
+	glGenBuffers(1, &gfx_ctx.ebo);
 
-	glBindVertexArray(gfx.vao);
+	glBindVertexArray(gfx_ctx.vao);
 
-	glBindBuffer(GL_ARRAY_BUFFER, gfx.vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, gfx_ctx.vbo);
 	glBufferData(GL_ARRAY_BUFFER, MAX_VERTICES * sizeof(Vertex), nullptr, GL_DYNAMIC_DRAW);
 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx.ebo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx_ctx.ebo);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, MAX_VERTICES * sizeof(u16), nullptr, GL_DYNAMIC_DRAW);
 
 	glEnableVertexAttribArray(0);
@@ -138,16 +96,14 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 	glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, color));
 
 	glEnableVertexAttribArray(3);
-	glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
+	glVertexAttribIPointer(3, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
 
 	glEnableVertexAttribArray(4);
-	glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, draw_layer));
+	glVertexAttribPointer(4, 2, GL_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, circle));
 
 	glEnableVertexAttribArray(5);
-	glVertexAttribPointer(5, 2, GL_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, circle));
+	glVertexAttribPointer(5, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
 
-	glEnableVertexAttribArray(6);
-	glVertexAttribPointer(6, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
 
 	{
 		string vs = S(
@@ -156,9 +112,8 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"layout (location = 1) in vec2  a_uv;"
 			"layout (location = 2) in vec4  a_color;"
 			"layout (location = 3) in uint  a_texid;"
-			"layout (location = 4) in float a_layer;"
-			"layout (location = 5) in vec2  a_circ;"
-			"layout (location = 6) in vec4  a_clip;"
+			"layout (location = 4) in vec2  a_circ;"
+			"layout (location = 5) in vec4  a_clip;"
 			"out vec4       v_color;"
 			"out vec2       v_uv;"
 			"out vec2       v_pos;"
@@ -175,7 +130,7 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"	v_clip   = a_clip;"
 			"   vec2 ndc = (a_pos / u_resolution) * 2.0 - 1.0;"
 			"   ndc.y    = -ndc.y;"
-			"   gl_Position = vec4(ndc, -a_layer, 1.0);"
+			"   gl_Position = vec4(ndc, 0.0, 1.0);"
 			"}"
 		);
 
@@ -204,39 +159,40 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 			"}"
 		);
 
-		u32 vs_id = graphics__compile_shader(GL_VERTEX_SHADER,   vs);
-		u32 fs_id = graphics__compile_shader(GL_FRAGMENT_SHADER, fs);
+		u32 vs_id = gfx__compile_shader(GL_VERTEX_SHADER,   vs);
+		u32 fs_id = gfx__compile_shader(GL_FRAGMENT_SHADER, fs);
 
 		assert(vs_id && fs_id);
 
-		gfx.program = glCreateProgram();
-		glAttachShader(gfx.program, vs_id);
-		glAttachShader(gfx.program, fs_id);
-		glLinkProgram(gfx.program);
+		gfx_ctx.program = glCreateProgram();
+		glAttachShader(gfx_ctx.program, vs_id);
+		glAttachShader(gfx_ctx.program, fs_id);
+		glLinkProgram(gfx_ctx.program);
 
 		glDeleteShader(vs_id);
 		glDeleteShader(fs_id);
 
-		glUseProgram(gfx.program);
+		glUseProgram(gfx_ctx.program);
 
-		gfx.uniforms[Uniform_Resolution] = glGetUniformLocation(gfx.program, "u_resolution");
-		gfx.uniforms[Uniform_Textures]   = glGetUniformLocation(gfx.program, "u_textures");
+		gfx_ctx.uniforms[Uniform_Resolution] = glGetUniformLocation(gfx_ctx.program, "u_resolution");
+		gfx_ctx.uniforms[Uniform_Textures]   = glGetUniformLocation(gfx_ctx.program, "u_textures");
 
 		int samplers[Texture_Count] = {0, 1};
-		glUniform1iv(gfx.uniforms[Uniform_Textures], Texture_Count, samplers);
+		glUniform1iv(gfx_ctx.uniforms[Uniform_Textures], Texture_Count, samplers);
 	}
 
 	{
 		u32 white = 0xFFFFFFFF;
-		glGenTextures(1, &gfx.textures[Texture_White]);
-		glBindTexture(GL_TEXTURE_2D, gfx.textures[Texture_White]);
+		glGenTextures(1, &gfx_ctx.textures[Texture_White]);
+		glBindTexture(GL_TEXTURE_2D, gfx_ctx.textures[Texture_White]);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &white);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	}
 
 	{
-		u64 arena_mark = persist->used;
+		Temp t = temp_begin(persist);
+		defer(temp_end(t));
 
 		const int   atlas_w      = ATLAS_SIZE;
 		const int   atlas_h      = ATLAS_SIZE;
@@ -245,26 +201,26 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 		bytes bitmap    = alloc_slice(persist, u8, atlas_w * atlas_h);
 		bytes ttf_buffer = FALLBACK_FONT;
 
-		stbtt_InitFont(&gfx.font, ttf_buffer.raw, 0);
+		stbtt_InitFont(&gfx_ctx.font, ttf_buffer.raw, 0);
 
 		int result = stbtt_BakeFontBitmap(
 			ttf_buffer.raw, 0, pixel_height,
 			bitmap.raw, atlas_w, atlas_h,
 			FIRST_CHAR, NUM_CHARS,
-			gfx.baked_chars
+			gfx_ctx.baked_chars
 		);
 
 		if (result <= 0)
 			printf("Font bake failed\n");
 
 		int ascent, descent, line_gap;
-		stbtt_GetFontVMetrics(&gfx.font, &ascent, &descent, &line_gap);
-		float scale     = stbtt_ScaleForPixelHeight(&gfx.font, pixel_height);
-		gfx.ascent      = ascent * scale;
-		gfx.line_height = (ascent - descent + line_gap) * scale;
+		stbtt_GetFontVMetrics(&gfx_ctx.font, &ascent, &descent, &line_gap);
+		float scale     = stbtt_ScaleForPixelHeight(&gfx_ctx.font, pixel_height);
+		gfx_ctx.ascent      = ascent * scale;
+		gfx_ctx.line_height = (ascent - descent + line_gap) * scale;
 
-		glGenTextures(1, &gfx.textures[Texture_Font]);
-		glBindTexture(GL_TEXTURE_2D, gfx.textures[Texture_Font]);
+		glGenTextures(1, &gfx_ctx.textures[Texture_Font]);
+		glBindTexture(GL_TEXTURE_2D, gfx_ctx.textures[Texture_Font]);
 
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, atlas_w, atlas_h, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap.raw);
 
@@ -277,147 +233,95 @@ graphics_init(const char *title, int width, int height, Arena *persist)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ONE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
-
-		arena_free(persist, arena_mark);
 	}
-
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LEQUAL);
-
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, gfx.textures[Texture_White]);
+	glBindTexture(GL_TEXTURE_2D, gfx_ctx.textures[Texture_White]);
 
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, gfx.textures[Texture_Font]);
+	glBindTexture(GL_TEXTURE_2D, gfx_ctx.textures[Texture_Font]);
 
-	gfx.win = win;
-	gfx.delta_time = 0.0f;
+	gfx_ctx.last_frame_time = os_time_now();
+
+	ivec2 size = os_window_size(window);
+	gfx_set_viewport(size.x, size.y);
 }
 
 funcdef void
-graphics_deinit()
+gfx_deinit()
 {
-    glDeleteVertexArrays(1, &gfx.vao);
-    glDeleteBuffers(1, &gfx.vbo);
-    glDeleteBuffers(1, &gfx.ebo);
-    glDeleteProgram(gfx.program);
-    glDeleteTextures(Texture_Count, gfx.textures);
-
-    RGFW_window_close(gfx.win);
-}
-
-funcdef bool
-graphics_update(Frame_Input *input)
-{
-	u64 update_time = platform_time_now();
-	gfx.delta_time = (f32) platform_time_diff(gfx.last_update_time, update_time).seconds;
-	gfx.last_update_time = update_time;
-
-	RGFW_window_swapBuffers_OpenGL(gfx.win);
-
-	if (RGFW_window_shouldClose(gfx.win)) return true;
-
-	RGFW_waitForEvent(-1);
-	RGFW_event event = {0};
-	while (RGFW_window_checkEvent(gfx.win, &event)) {
-		switch (event.type) {
-			case RGFW_windowResized: {
-				glViewport(0, 0, (int)gfx.win->w, (int)gfx.win->h);
-				break;
-			}
-
-			case RGFW_keyPressed:  {
-				RGFW_keyEvent k = event.key;
-				switch(k.value){
-					case RGFW_keyBackSpace: input->key_flags |= key_Backspace; break;
-					case RGFW_keyDelete: input->key_flags |= key_Delete; break;
-					case RGFW_keyEscape: input->key_flags |= key_Escape; break;
-					case RGFW_keyReturn: input->character = '\n'; break;
-					case RGFW_keyTab: input->character = '\t'; break;
-				}
-				break;
-			}
-
-			case RGFW_keyChar: {
-				RGFW_keyCharEvent k = event.keyChar;
-				if (!unicode_visual_rune(k.value)) break;
-				input->character = k.value;
-				break;
-			}
-		}
-	}
-
-	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-	return false;
-}
-
-funcdef f32
-graphics_delta_time()
-{
-	return gfx.delta_time;
+	glDeleteVertexArrays(1, &gfx_ctx.vao);
+	glDeleteBuffers(1, &gfx_ctx.vbo);
+	glDeleteBuffers(1, &gfx_ctx.ebo);
+	glDeleteProgram(gfx_ctx.program);
+	glDeleteTextures(Texture_Count, gfx_ctx.textures);
 }
 
 funcdef void
-graphics_submit_draw()
+gfx_begin()
 {
-	glBindVertexArray(gfx.vao);
+	OS_TimeStamp curr = os_time_now();
+	gfx_ctx.delta_time = (f32) os_time_diff(
+		gfx_ctx.last_frame_time, curr
+	).seconds;
+	gfx_ctx.last_frame_time = curr;
 
-	glBindBuffer(GL_ARRAY_BUFFER, gfx.vbo);
-	glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx.vertices.len * sizeof(Vertex)), gfx.vertices.raw);
+	glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+}
 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx.ebo);
-	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx.indices.len * sizeof(u16)), gfx.indices.raw);
+funcdef void
+gfx_submit()
+{
+	glBindVertexArray(gfx_ctx.vao);
 
-	glUseProgram(gfx.program);
-	glUniform2f(gfx.uniforms[Uniform_Resolution], (float)gfx.win->w, (float)gfx.win->h);
+	glBindBuffer(GL_ARRAY_BUFFER, gfx_ctx.vbo);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx_ctx.vertices.len * sizeof(Vertex)), gfx_ctx.vertices.raw);
 
-	glDrawElements(GL_TRIANGLES, (GLsizei)gfx.indices.len, GL_UNSIGNED_SHORT, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx_ctx.ebo);
+	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx_ctx.indices.len * sizeof(u16)), gfx_ctx.indices.raw);
 
-	clear(&gfx.vertices);
-	clear(&gfx.indices);
+	glUseProgram(gfx_ctx.program);
+	glDrawElements(GL_TRIANGLES, (GLsizei)gfx_ctx.indices.len, GL_UNSIGNED_SHORT, 0);
+
+	clear(&gfx_ctx.vertices);
+	clear(&gfx_ctx.indices);
 }
 
 
-funcdef vec2
-graphics_resolution()
+funcdef void
+gfx_set_viewport(s32 width, s32 height)
 {
-	return vec2 {
-		(f32) gfx.win->w, (f32) gfx.win->h
-	};
+	glViewport(0, 0, (int)width, (int)height);
+	glUseProgram(gfx_ctx.program);
+	glUniform2f(gfx_ctx.uniforms[Uniform_Resolution], (float)width, (float)height);
 }
 
-funcdef f32
-graphics_line_height()
+funcdef f32 
+delta_time()
 {
-	return gfx.line_height;
+	return gfx_ctx.delta_time;
 }
 
+funcdef f32 
+gfx_line_height()
+{
+	return gfx_ctx.line_height;
+}
 
-force_inline bool
+inline bool
 rects_overlap(f32 ax, f32 ay, f32 aw, f32 ah, f32 bx, f32 by, f32 bw, f32 bh)
 {
 	return !(ax + aw <= bx || ay + ah <= by || ax >= bx + bw || ay >= by + bh);
 }
 
 
-funcdef u8
-draw_push_layer(u8 new_layer)
-{
-	u8 old = gfx.draw_layer;
-	gfx.draw_layer = new_layer;
-	return old;
-}
-
 funcdef void
 draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 circ0, ivec2 circ1)
 {
-	if (gfx.vertices.len + 4 > gfx.vertices.capacity || gfx.indices.len + 6 > gfx.indices.capacity) {
-		graphics_submit_draw();
+	if (gfx_ctx.vertices.len + 4 > gfx_ctx.vertices.capacity || gfx_ctx.indices.len + 6 > gfx_ctx.indices.capacity)
+	{
+		gfx_submit();
 	}
 
 	s8 cr0_x = (s8) circ0.x;
@@ -428,12 +332,12 @@ draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 
 	f32 x = pos.x,  y = pos.y;
 	f32 w = size.x, h = size.y;
 
-	Rect clip = gfx.clip_stack->rect;
+	Rect clip = gfx_ctx.clip_stack->rect;
 
 	if (!rects_overlap(x, y, w, h, clip.from.x, clip.from.y, clip.size.x, clip.size.y))
 		return;
 
-	u16 i = (u16)(gfx.vertices.len);
+	u16 i = (u16)(gfx_ctx.vertices.len);
 
 	u16 u0 = (u16)(uv0.x * MAX_U16);
 	u16 v0 = (u16)(uv0.y * MAX_U16);
@@ -445,24 +349,25 @@ draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 
 	u16 c2 = (u16)(clip.from.x + clip.size.x);
 	u16 c3 = (u16)(clip.from.y + clip.size.y);
 
-	append(&gfx.vertices, Vertex { { (s16)x,       (s16)y }, { u0, v0 }, color, texture, gfx.draw_layer, {cr0_x, cr0_y}, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (s16)(x + w), (s16)y }, { u1, v0 }, color, texture, gfx.draw_layer, {cr1_x, cr0_y}, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (s16)(x + w), (s16)(y + h) }, { u1, v1 }, color, texture, gfx.draw_layer, {cr1_x, cr1_y}, { c0, c1, c2, c3 } });
-	append(&gfx.vertices, Vertex { { (s16)x,       (s16)(y + h) }, { u0, v1 }, color, texture, gfx.draw_layer, {cr0_x, cr1_y}, { c0, c1, c2, c3 } });
+	append(&gfx_ctx.vertices, Vertex { { (s16)x,       (s16)y }, { u0, v0 }, color, texture, {cr0_x, cr0_y}, { c0, c1, c2, c3 } });
+	append(&gfx_ctx.vertices, Vertex { { (s16)(x + w), (s16)y }, { u1, v0 }, color, texture, {cr1_x, cr0_y}, { c0, c1, c2, c3 } });
+	append(&gfx_ctx.vertices, Vertex { { (s16)(x + w), (s16)(y + h) }, { u1, v1 }, color, texture, {cr1_x, cr1_y}, { c0, c1, c2, c3 } });
+	append(&gfx_ctx.vertices, Vertex { { (s16)x,       (s16)(y + h) }, { u0, v1 }, color, texture, {cr0_x, cr1_y}, { c0, c1, c2, c3 } });
 
-	append(&gfx.indices, (u16)(i + 0));
-	append(&gfx.indices, (u16)(i + 1));
-	append(&gfx.indices, (u16)(i + 2));
-	append(&gfx.indices, (u16)(i + 2));
-	append(&gfx.indices, (u16)(i + 3));
-	append(&gfx.indices, (u16)(i + 0));
+	append(&gfx_ctx.indices, (u16)(i + 0));
+	append(&gfx_ctx.indices, (u16)(i + 1));
+	append(&gfx_ctx.indices, (u16)(i + 2));
+	append(&gfx_ctx.indices, (u16)(i + 2));
+	append(&gfx_ctx.indices, (u16)(i + 3));
+	append(&gfx_ctx.indices, (u16)(i + 0));
 }
+
 
 funcdef vec2
 draw_text(string s, vec2 start_pos, u32 color)
 {
 	f32 x = start_pos.x;
-	f32 y = start_pos.y + gfx.ascent;
+	f32 y = start_pos.y + gfx_ctx.ascent;
 
 	f32 max_x = x;
 	f32 min_y = y;
@@ -472,11 +377,11 @@ draw_text(string s, vec2 start_pos, u32 color)
 
 	int width = 0;
 	for (int i = 0; i < (int)s.len; i += width) {
-		rune c = utf8_decode(slice(s, i, s.len), &width);
+		rune c = utf8_decode(s.range(i, s.len), &width);
 
 		if (c == '\n') {
 			x  = start_pos.x;
-			y += gfx.line_height;
+			y += gfx_line_height();
 
 			column = 0;
 
@@ -494,7 +399,7 @@ draw_text(string s, vec2 start_pos, u32 color)
 			for (u64 t = 0; t < spaces; ++t) {
 				stbtt_aligned_quad q;
 				stbtt_GetBakedQuad(
-					gfx.baked_chars,
+					gfx_ctx.baked_chars,
 					512,
 					512,
 					' ' - FIRST_CHAR,
@@ -519,7 +424,7 @@ draw_text(string s, vec2 start_pos, u32 color)
 
 		stbtt_aligned_quad q;
 		stbtt_GetBakedQuad(
-			gfx.baked_chars,
+			gfx_ctx.baked_chars,
 			512,
 			512,
 			(int)(c - FIRST_CHAR),
@@ -541,7 +446,9 @@ draw_text(string s, vec2 start_pos, u32 color)
 				invalid ? Color::error : color,
 				Texture_Font,
 				uv0,
-				uv1
+				uv1,
+				{0,0},
+				{0,0}
 			);
 
 			if (q.y0 < min_y) min_y = q.y0;
@@ -563,18 +470,21 @@ draw_text(string s, vec2 start_pos, u32 color)
 funcdef void
 draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color)
 {
-	if (radius <= 0.5f) 
+	if (radius <= 0.5f)
 	{
 		draw_quad(pos, size, color);
 		return;
 	}
 
+	radius = Min(radius, Min(size.x, size.y) * 0.5f);
+
 	draw_quad({pos.x, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {127, 127}, {0, 0});
 	draw_quad({pos.x + size.x - radius, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {0, 127}, {127, 0});
 	draw_quad({pos.x + size.x - radius, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {0, 0}, {127, 127});
 	draw_quad({pos.x, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {127, 0}, {0, 127});
+
 	draw_quad({pos.x + radius, pos.y}, {size.x - radius * 2, size.y}, color);
-	draw_quad({pos.x, pos.y + radius}, {size.x - radius * 2, size.y - radius * 2}, color);
+	draw_quad({pos.x, pos.y + radius}, {radius, size.y - radius * 2}, color);
 	draw_quad({pos.x + size.x - radius, pos.y + radius}, {radius, size.y - radius * 2}, color);
 }
 
@@ -596,17 +506,17 @@ draw_capsule(vec2 pos, vec2 size, u32 color)
 }
 
 funcdef f32
-graphics_char_width(rune c)
+gfx_char_width(rune c)
 {
     if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS) c = NUM_CHARS + FIRST_CHAR - 1;
     f32 x = 0, y = 0;
     stbtt_aligned_quad q;
-    stbtt_GetBakedQuad(gfx.baked_chars, ATLAS_SIZE, ATLAS_SIZE, (int)(c - FIRST_CHAR), &x, &y, &q, 1);
+    stbtt_GetBakedQuad(gfx_ctx.baked_chars, ATLAS_SIZE, ATLAS_SIZE, (int)(c - FIRST_CHAR), &x, &y, &q, 1);
     return x;
 }
 
 funcdef vec2
-graphics_measure_text(string s)
+gfx_measure_text(string s)
 {
 	f32 x = 0;
 	f32 max_x = 0;
@@ -619,7 +529,7 @@ graphics_measure_text(string s)
 
 	for (int i = 0; i < (int)s.len; i += width) {
 		rune c = utf8_decode(
-			slice(s, i, s.len),
+			s.range(i, s.len),
 			&width
 		);
 
@@ -640,10 +550,9 @@ graphics_measure_text(string s)
 		}
 
 		if (c == '\t') {
-			u64 spaces =
-				TAB_WIDTH - (column % TAB_WIDTH);
+			u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
 
-			x += graphics_char_width(' ') * spaces;
+			x += gfx_char_width(' ') * spaces;
 			column += spaces;
 
 			if (x > max_x) {
@@ -653,7 +562,7 @@ graphics_measure_text(string s)
 			continue;
 		}
 
-		x += graphics_char_width(c);
+		x += gfx_char_width(c);
 		column += 1;
 
 		if (x > max_x) {
@@ -663,27 +572,75 @@ graphics_measure_text(string s)
 
 	return {
 		max_x,
-		lines * gfx.line_height
+		lines * gfx_line_height()
 	};
 }
 
-
 funcdef void
-graphics_push_clip(Rect rect, Arena *frame_alloc)
+gfx_push_clip(Rect rect, Arena *frame_alloc)
 {
+	if (gfx_ctx.clip_stack) {
+		rect = gfx__rect_intersect(rect, gfx_ctx.clip_stack->rect);
+	}
+
 	Render_Clip *clip = alloc_struct(frame_alloc, Render_Clip);
 	clip->rect = rect;
-	clip->next = gfx.clip_stack;
-	gfx.clip_stack = clip;
+	clip->next = gfx_ctx.clip_stack;
+
+	gfx_ctx.clip_stack = clip;
 }
 
 funcdef Render_Clip
-graphics_pop_clip()
+gfx_pop_clip()
 {
 	Render_Clip clip = {};
-	clip.rect = gfx.clip_stack->rect;
+	clip.rect = gfx_ctx.clip_stack->rect;
 
-	gfx.clip_stack = gfx.clip_stack->next;
-
+	gfx_ctx.clip_stack = gfx_ctx.clip_stack->next;
 	return clip;
+}
+
+
+funcdef u32
+gfx__compile_shader(int type, string src)
+{
+	u32 id = glCreateShader(type);
+
+	const char *cstr = (char *)src.raw;
+	int len = (int)src.len;
+
+	glShaderSource(id, 1, &cstr, &len);
+	glCompileShader(id);
+
+	int success;
+	glGetShaderiv(id, GL_COMPILE_STATUS, &success);
+
+	if (!success) {
+		char log[1024];
+		glGetShaderInfoLog(id, sizeof(log), 0, log);
+		printf("Shader compile error:\n%s\n", log);
+		return 0;
+	}
+
+	return id;
+}
+
+funcdef Rect
+gfx__rect_intersect(Rect a, Rect b)
+{
+	Rect result = {};
+
+	f32 x0 = Max(a.from.x, b.from.x);
+	f32 y0 = Max(a.from.y, b.from.y);
+
+	f32 x1 = Min(a.from.x + a.size.x, b.from.x + b.size.x);
+	f32 y1 = Min(a.from.y + a.size.y, b.from.y + b.size.y);
+
+	result.from.x = x0;
+	result.from.y = y0;
+
+	result.size.x = Max(0.0f, x1 - x0);
+	result.size.y = Max(0.0f, y1 - y0);
+
+	return result;
 }

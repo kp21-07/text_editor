@@ -1,9 +1,267 @@
 #include "editor.h"
 
-#include <string.h>
-#include <stdarg.h>
-#include <stdio.h>
 
+funcdef s64
+string_to_int(string s, bool *ok)
+{
+	s = string_strip(s);
+
+	if (s.len == 0) {
+		if (ok) *ok = false;
+		return 0;
+	}
+
+	u64 i = 0;
+	bool negative = false;
+
+	if (s[0] == '-') {
+		negative = true;
+		i += 1;
+	}
+	else if (s[0] == '+') {
+		i += 1;
+	}
+
+	if (i >= s.len) {
+		if (ok) *ok = false;
+		return 0;
+	}
+
+	s64 result = 0;
+
+	for (; i < s.len; ++i) {
+		u8 c = s[i];
+
+		if (c < '0' || c > '9') {
+			if (ok) *ok = false;
+			return 0;
+		}
+
+		s64 digit = c - '0';
+
+		result = result * 10 + digit;
+	}
+
+	if (negative) {
+		result = -result;
+	}
+
+	if (ok) *ok = true;
+
+	return result;
+}
+
+funcdef string
+string_strip(string s)
+{
+	u64 begin = 0;
+	u64 end = s.len;
+
+	while (begin < end && is_space(s[begin])) begin += 1;
+	while (end > begin && is_space(s[end - 1])) end -= 1;
+
+	return s.range(begin, end);
+}
+
+funcdef string
+string_from_bytes(bytes data)
+{
+	return string {
+		data.raw, data.len
+	};
+}
+
+
+funcdef string
+string_copy(Arena *arena, string s)
+{
+	bytes data = alloc_slice(arena, u8, s.len);
+	memcpy(data.raw, s.raw, s.len);
+	return string_from_bytes(data);
+}
+
+
+funcdef string
+string_concat(Arena *arena, string a, string b)
+{
+	u64 total_len = a.len + b.len;
+	
+	bytes data = alloc_slice(arena, u8, total_len);
+
+	memcpy(data.raw, a.raw, a.len);
+	memcpy(data.raw + a.len, b.raw, b.len);
+
+	return string_from_bytes(data);
+}
+
+funcdef slice<string>
+string_split(string original, Arena *arena)
+{
+	u64 count = 0;
+	bool in_token = false;
+
+	for (u64 i = 0; i < original.len; ++i)
+	{
+		if (is_space(original[i])) {
+			in_token = false;
+		}
+		else if (!in_token)
+		{
+			in_token = true;
+			count += 1;
+		}
+	}
+
+	slice<string> result = alloc_slice(arena, string, count);
+
+	u64 index = 0;
+	u64 start = 0;
+
+	in_token = false;
+
+	for (u64 i = 0; i < original.len; ++i)
+	{
+		if (is_space(original[i]))
+		{
+			if (in_token)
+			{
+				result[index++] = original.range(start, i);
+				in_token = false;
+			}
+		}
+		else if (!in_token)
+		{
+			start = i;
+			in_token = true;
+		}
+	}
+
+	if (in_token) {
+		result[index++] = original.range(start, original.len);
+	}
+
+	return result;
+}
+
+
+// like printf formating, but returns a new string
+funcdef string
+string_format(Arena *arena, const char *fmt_string, ...)
+{
+	va_list args;
+
+	va_start(args, fmt_string);
+	int len = vsnprintf(nullptr, 0, fmt_string, args);
+	va_end(args);
+
+	if (len < 0) return {};
+
+	bytes buf = alloc_slice(arena, u8, len + 1);
+
+	va_start(args, fmt_string);
+	vsnprintf((char *)buf.raw, len + 1, fmt_string, args);
+	va_end(args);
+
+	return { buf.raw, (u64) len };
+}
+
+
+funcdef string
+string_from_cstring(Arena *arena, char *cstring)
+{
+	bytes data = alloc_slice(arena, u8, strlen(cstring));
+	memcpy(data.raw, cstring, data.len);
+	return string_from_bytes(data);
+}
+
+
+funcdef slice<string>
+strings_from_cstrings(Arena *arena, int count, char **cstrings)
+{
+	slice<string> result = alloc_slice(arena, string, count);
+
+	for (int i=0; i<count; ++i)
+	{
+		char *cstring = cstrings[i];
+		string str = string_from_cstring(arena, cstring);
+		result[i] = str;
+	}
+
+	return result;
+}
+
+funcdef string
+string_to_cstring(Arena *arena, string s)
+{
+	bytes data = alloc_slice(arena, u8, s.len + 1);
+	memcpy(data.raw, s.raw, s.len);
+	data[s.len] = '\0';
+
+	return string_from_bytes(data);
+}
+
+funcdef string
+string_from_list(list<u8> data)
+{
+	return string {
+		data.raw,
+		data.len
+	};
+}
+
+funcdef u64
+string_count_lines(string s)
+{
+	if (s.len == 0) return 0;
+
+	u64 count = 0;
+	for (u64 i=0; i<s.len; ++i) {
+		if (s[i] == '\n') count += 1;
+	}
+	if (s[s.len-1] != '\n') count += 1;
+	return count;
+}
+
+
+funcdef u64
+string_column_count(string s, int indent_width)
+{
+	u64 count = 0;
+
+	int width = 0;
+
+	for (u64 i = 0; i < s.len; i += width) {
+		rune c = utf8_decode(
+			s.range(i, s.len),
+			&width
+		);
+
+		if (c == '\n') {
+			break;
+		}
+		else if (c == '\t') {
+			u64 remainder = count % indent_width;
+			count += indent_width - remainder;
+		}
+		else {
+			count += 1;
+		}
+	}
+
+	return count;
+}
+
+
+funcdef bool
+string_equal(string a, string b)
+{
+	if (a.len != b.len) return false;
+	if (a.raw == b.raw) return true;
+
+	return memcmp(a.raw, b.raw, a.len) == 0;
+}
+
+// ~gaureesh @NOTE: utf8
 
 funcdef int
 utf8_character_width(u8 first_byte)
@@ -57,68 +315,6 @@ unicode_visual_rune(rune r)
 		return false;
 
 	return true;
-}
-
-
-funcdef Char_Kind
-char_kind(rune r)
-{
-	// @TODO: utf8 aware
-
-	if (is_space(r)) {
-		return Char_Space;
-	}
-
-	switch (r) {
-		case '(':
-		case '{':
-		case '[':
-			return Char_Open;
-
-		case ')':
-		case '}':
-		case ']':
-			return Char_Close;
-
-		case '"':
-		case '\'':
-		case '`':
-			return Char_Quote;
-
-		case '@': case '!': case '#': case '$':
-		case '^': case '%': case '&': case '*':
-		case '-': case '+': case '=': case '|':
-		case '\\': case '/': case ':': case ';':
-		case ',': case '.': case '?': case '~':
-			return Char_Punct;
-	}
-
-	return Char_Word;
-}
-
-
-funcdef rune
-char_get_pair(rune r)
-{
-	switch (r) {
-		case '(': return ')';
-		case ')': return '(';
-
-		case '{': return '}';
-		case '}': return '{';
-
-		case '[': return ']';
-		case ']': return '[';
-
-		case '<': return '>';
-		case '>': return '<';
-
-		case '"': return '"';
-		case '\'': return '\'';
-		case '`': return '`';
-	}
-
-	return 0;
 }
 
 funcdef rune
@@ -230,7 +426,7 @@ utf8_encode(rune cp, Arena *arena)
 	if (cp <= 0x7F)
 	{
 		out[0] = (u8)cp;
-		return slice(string_from_bytes(out), 0, 1);
+		return string_from_bytes(out).range(0, 1);
 	}
 
 	/* 2 byte */
@@ -238,7 +434,7 @@ utf8_encode(rune cp, Arena *arena)
 	{
 		out[0] = 0xC0 | ((cp >> 6) & 0x1F);
 		out[1] = 0x80 | ((cp >> 0) & 0x3F);
-		return slice(string_from_bytes(out), 0, 2);
+		return string_from_bytes(out).range(0, 2);
 	}
 
 	/* 3 byte */
@@ -247,7 +443,7 @@ utf8_encode(rune cp, Arena *arena)
 		out[0] = 0xE0 | ((cp >> 12) & 0x0F);
 		out[1] = 0x80 | ((cp >> 6 ) & 0x3F);
 		out[2] = 0x80 | ((cp >> 0 ) & 0x3F);
-		return slice(string_from_bytes(out), 0, 3);
+		return string_from_bytes(out).range(0, 3);
 	}
 
 	/* 4 byte */
@@ -256,7 +452,7 @@ utf8_encode(rune cp, Arena *arena)
 	out[2] = 0x80 | ((cp >> 6 ) & 0x3F);
 	out[3] = 0x80 | ((cp >> 0 ) & 0x3F);
 
-	return slice(string_from_bytes(out), 0, 4);
+	return string_from_bytes(out).range(0, 4);
 }
 
 funcdef u64
@@ -267,220 +463,22 @@ utf8_prev_boundary(string data, u64 i)
     return i;
 }
 
-
-funcdef string
-string_format(Arena *arena, const char *fmt, ...)
-{
-	va_list args;
-
-	va_start(args, fmt);
-	int len = vsnprintf(nullptr, 0, fmt, args);
-	va_end(args);
-
-	if (len < 0) return {};
-
-	bytes buf = alloc_slice(arena, u8, len + 1);
-
-	va_start(args, fmt);
-	vsnprintf((char *)buf.raw, len + 1, fmt, args);
-	va_end(args);
-
-	return { buf.raw, (u64) len };
-}
-
 funcdef u64
-string_count_lines(string s)
+utf8_next_boundary(string data, u64 i)
 {
-	if (s.len == 0) return 0;
+    if (i >= data.len)
+        return data.len;
 
-	u64 count = 0;
-	for (u64 i=0; i<s.len; ++i) {
-		if (s[i] == '\n') count += 1;
-	}
-	if (s[s.len-1] != '\n') count += 1;
-	return count;
-}
+    i += 1;
 
-funcdef u64
-string_column_count(string s, int indent_width)
-{
-	u64 count = 0;
+    while (i < data.len && utf8_continuation_byte(data[i]))
+        i += 1;
 
-	int width = 0;
-
-	for (u64 i = 0; i < s.len; i += width) {
-		rune c = utf8_decode(
-			slice(s, i, s.len),
-			&width
-		);
-
-		if (c == '\n') {
-			break;
-		}
-		else if (c == '\t') {
-			u64 remainder = count % indent_width;
-			count += indent_width - remainder;
-		}
-		else {
-			count += 1;
-		}
-	}
-
-	return count;
-}
-
-funcdef string
-string_concat(string a, string b, Arena *arena)
-{
-	bytes data = alloc_slice(arena, u8, a.len + b.len);
-
-	memcpy(data.raw, a.raw, a.len);
-	memcpy(data.raw + a.len, b.raw, b.len);
-
-	return string_from_bytes(data);
-}
-
-
-funcdef u64
-string_find_first(string s, rune r)
-{
-	u64 i=0;
-	while (i < s.len) {
-		int width = 0;
-		rune codepoint = utf8_decode(slice(s, i, s.len), &width);
-		if (codepoint == r) return i;
-		i += width;
-	}
-	return s.len;
-}
-
-funcdef u64
-string_find_last(string s, rune r)
-{
-	s64 i = s64(s.len) - 1;
-
-	while (i >= 0) {
-		while (i >= 0 && utf8_continuation_byte(s[i])) {
-			i -= 1;
-		}
-
-		if (i < 0) break;
-
-		int width = 0;
-		rune codepoint = utf8_decode(slice(s, i, s.len), &width);
-
-		if (codepoint == r)
-			return u64(i);
-
-		i -= 1;
-	}
-
-	return s.len;
+    return i;
 }
 
 funcdef bool
 is_space(rune r)
 {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\r';
-}
-
-funcdef string
-string_strip(string s)
-{
-	u64 begin = 0;
-	u64 end = s.len;
-
-	while (begin < end && is_space(s[begin])) begin += 1;
-	while (end > begin && is_space(s[end - 1])) end -= 1;
-
-	return slice(s, begin, end);
-}
-
-funcdef Slice<string>
-string_split(string original, Arena *arena)
-{
-	u64 count = 0;
-	bool in_token = false;
-
-	for (u64 i = 0; i < original.len; ++i)
-	{
-		if (is_space(original[i])) {
-			in_token = false;
-		}
-		else if (!in_token)
-		{
-			in_token = true;
-			count += 1;
-		}
-	}
-
-	Slice<string> result = alloc_slice(arena, string, count);
-
-	u64 index = 0;
-	u64 start = 0;
-
-	in_token = false;
-
-	for (u64 i = 0; i < original.len; ++i)
-	{
-		if (is_space(original[i]))
-		{
-			if (in_token)
-			{
-				result[index++] = slice(original, start, i);
-				in_token = false;
-			}
-		}
-		else if (!in_token)
-		{
-			start = i;
-			in_token = true;
-		}
-	}
-
-	if (in_token) {
-		result[index++] = slice(original, start, original.len);
-	}
-
-	return result;
-}
-
-funcdef bool
-string_equal(string a, string b)
-{
-	if (a.len != b.len) return false;
-	if (a.raw == b.raw) return true;
-
-	return memcmp(a.raw, b.raw, a.len) == 0;
-}
-
-funcdef string
-string_copy(string str, Arena *arena)
-{
-	bytes data = alloc_slice(arena, u8, str.len);
-	memcpy(data.raw, str.raw, str.len);
-	return string_from_bytes(data);
-}
-
-funcdef Slice<string>
-string_list(u8 **cstring, u64 len, Arena *arena)
-{
-	Slice<string> result = alloc_slice(arena, string, len);
-	for (u64 i=0; i<len; ++i) {
-		u64 l = strlen((char *) cstring[i]);
-		string s = { cstring[i], l };
-		result[i] = string_copy(s, arena);
-	}
-	return result;
-}
-
-funcdef string
-string_to_cstring(string s, Arena *arena) 
-{
-	bytes data = alloc_slice(arena, u8, s.len + 1);
-	assert(data.len > 0);
-	memcpy(data.raw, s.raw, s.len);
-	data[s.len] = 0;
-
-	return string_from_bytes(data);
 }

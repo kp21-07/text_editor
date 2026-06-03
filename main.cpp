@@ -1,342 +1,381 @@
 #include "editor.h"
 #include "config.h"
 
-const string MODE_STRING[Mode_Count] = {
-	S("normal"),
-	S("insert"),
-	S("command"),
-	S("buffer search")
+#include <math.h>
+
+enum UI_Classes {
+	Status_Line,
+	Command_Box,
+	Pane,
+	Class_Count,
 };
 
-funcdef void
-draw_buffer_view(Buffer *buffer, Rect region)
+
+funcdef string
+format_user_input(rune codepoint, Arena *frame_alloc)
 {
-	graphics_push_clip(region, ed_frame_arena());
-	defer(graphics_pop_clip());
+	if (codepoint == '\n') {
 
-	f32 line_height = graphics_line_height();
-	f32 digit_width = graphics_char_width('0');
-	f32 space_width = graphics_char_width(' ');
+		Buffer *buf = ed_active();
+		u64 line_index = buffer_line_index_at(buf, buf->cursor);
+		Range_u64 range = buffer_line_range(buf, line_index);
+		range.end = Min(range.end, buf->cursor);
+		string line = buffer_slice(buf, frame_alloc, range);
 
-	string buf_string = string_from_bytes(slice_from_list(buffer->data));
-	Slice<Line> buffer_lines = slice_from_list(buffer->lines);
+		u64 i=0;
+		for (;i<line.len && is_space(line[i]); ++i)
+			;
 
-	u64 cursor_line = buffer_line_at_index(buffer, buffer->cursor);
-	Range_U64 cursor_range = buffer_line_range(buffer, cursor_line);
-
-	//
-	// gutter
-	//
-
-	u64 gutter_digits = Max(digit_count_u64(buffer_lines.len), 2);
-
-	f32 gutter_pad   = digit_width;
-	f32 gutter_width = gutter_pad * 2 + digit_width * gutter_digits;
-
-	f32 text_x = region.from.x + gutter_width;
-	
-	//
-	// draw lines
-	//
-
-	f32 y = region.from.y;
-
-	for (u64 i = 0; i < buffer_lines.len; ++i) {
-		if (y > region.from.y + region.size.y) {
-			break;
-		}
-
-		Range_U64 range = buffer_line_range(buffer, i);
-		string line = slice(buf_string, range.begin, range.end);
-
-		bool current_line = (i == cursor_line);
-
-		if (current_line) {
-			draw_quad_rounded(
-				{text_x, y},
-				{region.size.x - gutter_width - 2, line_height},
-				5,
-				Color::bg_alt
-			);
-		}
-
-		string line_number = string_format(
-			ed_frame_arena(),
-			"%*zu",
-			(int)gutter_digits,
-			i + 1
-		);
-
-		if(current_line) {
-			draw_quad_rounded(
-				{region.from.x + gutter_pad, y},
-				{digit_width * gutter_digits, line_height},
-				5,
-				Color::dim
-			);
-		}
-
-		draw_text(
-			line_number,
-			{region.from.x + gutter_pad, y},
-			current_line ? Color::bg : Color::dim
-		);
-
-		draw_text(line, {text_x, y}, Color::fg);
-
-		if (current_line && ed_mode() != Mode_Command) {
-			u64 cursor_offset = buffer->cursor - cursor_range.begin;
-
-			string before_cursor = slice(line, 0, cursor_offset);
-
-			f32 cursor_x = text_x + graphics_measure_text(before_cursor).x;
-			vec2 target_cursor = {cursor_x, y};
-			vec2 cursor_pos = target_cursor;
-
-			if (ed_mode() != Mode_Insert) {
-				draw_capsule(
-					cursor_pos,
-					{space_width, line_height},
-					Color::cursor
-				);
-
-				if (cursor_offset < line.len) {
-					s32 width = 0;
-
-					utf8_decode(slice(line, cursor_offset, line.len), &width);
-
-					string cursor_char = slice(line, cursor_offset, cursor_offset + width);
-
-					draw_text(cursor_char, cursor_pos, Color::bg);
-				}
-			} else {
-				draw_quad(
-					cursor_pos,
-					{2, line_height},
-					Color::cursor
-				);
-			}
-		}
-		y += line_height;
+		return string_concat(frame_alloc, S("\n"), line.range(0, i));
 	}
+	else if(codepoint == '\t' || unicode_visual_rune(codepoint)) {
+		return utf8_encode(codepoint, frame_alloc);
+	}
+	return {};
 }
 
-funcdef UI_Box *
-layout_panel_ui() {
-	const f32 status_height = graphics_line_height() + 4;
+global UI_Config STYLES[Class_Count];
 
-	UI_Box *panel_box = nullptr;
+funcdef void
+set_default_style() {
+	STYLES[Status_Line] = {
+		UI_Clip_Children,
+		{
+			{ Size_Fill, 1.0f },
+			{ Size_Fixed, gfx_line_height() }
+		},
+		Pad(2),
 
-	UI(
-		.size = {
+		4.0f, // rounding
+		0.0f, // border
+
+		Color::dim, // color
+		0x0, // text color
+		0x0, // border color
+
+		{}, // text
+
+		2, // gap
+		Layout_Row,
+		Align_Start,
+	};
+
+	STYLES[Command_Box] = {
+		UI_Clip_Children,
+		{
+			{ Size_Fill, 3.0f },
+			{ Size_Fit }
+		},
+		Pad(10),
+
+		10.0f, // rounding
+		1.0f, // border
+
+		Color::bg, // color
+		0x0, // text color
+		Color::dim, // border color
+
+		{}, // text
+
+		5, // gap
+		Layout_Col,
+		Align_Center,
+	};
+
+	STYLES[Pane] = {
+		UI_Invisible,
+		{
 			{ Size_Fill, 1.0f },
 			{ Size_Fill, 1.0f }
 		},
-		.border = 1,
-		.color = Color::bg,
-		.border_color = Color::bg_alt,
-	) {
-		auto buf = ed_active_buffer();
-		if (!buf) {
-			string directory = ed_project_dir();
+		Pad(5),
 
-			UI(
-				.size = {
-					{ Size_Fill, 1.0f },
-					{ Size_Fill, 1.0f }
-				},
-				.color = Color::error,
-				.text = directory,
-				.align = Align_Center,
-			);
-			continue;
-		}
+		0.0f, // rounding
+		0.0f, // border
 
-		panel_box = ui_current();
-	}
-	return panel_box;
+		0x0, // color
+		0x0, // text color
+		0x0, // border color
+
+		{}, // text
+
+		1, // gap
+		Layout_Row,
+		Align_Center,
+	};
 }
 
-void entry_point(Slice<string> args)
+funcdef Ed_Cmd
+parse_command(slice<string> args)
 {
-	ed_init();
-	ui_init(ed_frame_arena());
-	graphics_init("text editor", 1280, 800, ed_persist_arena());
+	if (!args.len)
+		return {};
+	
+	string main_arg = args[0];
 
-	u64 last_frame_time = platform_time_now();
+	bool int_ok = false;
+	s64 i_val = string_to_int(main_arg, &int_ok);
 
-	if (args.len > 1) {
-		string path = args[1];
-
-		if (platform_is_directory(path, ed_frame_arena()))
-			ed_execute_cmd(open_workspace(path));
-		else
-			ed_execute_cmd(open_buffer(path));
+	if (int_ok && i_val >= 0) {
+		return jump_to_line((u64) i_val);
 	}
 
-	for (bool quit = false; !quit;)
-	{
-		Frame_Input input = {};
-
-		bool window_close = graphics_update(&input);
-		quit = ed_update(input);
-
-		if (window_close) break;
-
-		Rect window_rect = {};
-		window_rect.size = graphics_resolution();
-
-		graphics_push_clip(window_rect, ed_frame_arena());
-		defer(graphics_pop_clip());
-
-		{
-			ui_begin_frame(window_rect, UI_Invisible);
-
-			UI_Box *p1 = nullptr;
-
-			p1 = layout_panel_ui();
-
-			UI(
-				.size = {
-					{ Size_Fill, 1.0f },
-					{ Size_Fixed, graphics_line_height() + 4 }
-				},
-				.padding = Pad(2),
-				.radius = 5,
-				.color = Color::dim,
-				.layout = Layout_Row,
-			) {
-				string mode_string = MODE_STRING[ed_mode()];
-				UI(
-					.size = {
-						{ Size_Fill, 1.0f },
-						{ Size_Fill, 1.0f }
-					},
-					.color = Color::bg,
-					.text = mode_string,
-				);
-
-				auto buf = ed_active_buffer();
-				if (buf) {
-					f32 width = graphics_measure_text(buf->path).x;
-					UI(
-						.size = {
-							{ Size_Fixed, width },
-							{ Size_Fill, 1.0f }
-						},
-						.color = Color::bg,
-						.text = buf->path,
-					);
-				}
-			}
-
-			auto draw_list = ui_end_frame();
-			ui_draw_cmd_list(draw_list);
-
-			if (p1) {
-				draw_buffer_view(ed_active_buffer(), p1->rect);
+	if (string_equal(main_arg, cmd_function(Cmd_Buffer_Open))) {
+		auto params = args.range(1, args.len);
+		if (params.len == 1) {
+			OS_FileData data = os_file_data(params[0]);
+			if (Flag_Check(data.flags, File_Directory))
+			{
+				return open_workspace(params[0]);
 			}
 		}
+		return open_buffer(params);
+	}
+	else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Close))) {
+		slice<string> paths = args.range(1, args.len);
+		if (paths.len == 0 && ed_active() != nullptr) {
+			paths = {
+				&ed_active()->path,
+				1
+			};
+			return close_buffer(paths);
+		}
 
-		if (ed_mode() == Mode_Command) {
-			ui_begin_frame(window_rect, 0, Layout_Row, Pad_XY(0, 100), Hex(0x00000066));
-			const f32 status_height = graphics_line_height() + 4;
+		return close_buffer(paths);
+	} else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Save))) {
+		Ed_Cmd cmd = save_buffer();
+		return cmd;
+	}
 
-			string cmd_string = ed_command_as_string();
-			cmd_string = string_format(ed_frame_arena(), ":%.*s", s_fmt(cmd_string));
-			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
-			UI(
-				.size = {
-					{ Size_Fill, 1.0f },
-					{ Size_Fixed, status_height }
-				},
-				.padding = Pad(2),
-				.radius = 5,
-				.border = 1.0f,
-				.color = Color::bg,
-				.border_color = Color::cursor,
-				.layout = Layout_Row,
-			) {
-				f32 width = graphics_measure_text(cmd_string).x;
-				UI(
-					.size = {
-						{ Size_Fixed, width },
-						{ Size_Fill, 1.0f }
-					},
-					.color = Color::fg,
-					.text = cmd_string,
-				);
-				UI(
-					.size = {
-						{ Size_Fixed, 2 },
-						{ Size_Fill,  1.0f },
-					},
-					.color = Color::cursor,
-				);
+	return {};
+}
+
+void entry_point(slice<string> args)
+{
+	os_init();
+	defer(os_deinit());
+    
+	OS_Handle win = os_open_window(S("editor"))	;
+	defer(os_close_window(win));
+
+	ed_init();
+	defer(ed_deinit());
+    
+	gfx_init(win, persist_arena());
+	defer(gfx_deinit());
+    
+	ui_init(frame_arena());
+	set_default_style();
+
+	while(!os_window_should_close(win)) {
+		arena_free(frame_arena());
+        
+		OS_Input input = os_prepare_frame(win);
+		Ed_Mode curr_mode = ed_mode();
+
+		if (curr_mode == Ed_Mode::Normal) {
+			Ed_Cmd cmd = {};
+
+			switch (input.codepoint) {
+				case ':': cmd = change_mode(Ed_Mode::Command); break;
+				case 'i': cmd = change_mode(Ed_Mode::Insert); break;
+				case 'h': cmd = move_cursor(Direction::Left, 1); break;
+				case 'j': cmd = move_cursor(Direction::Down, 1); break;
+				case 'k': cmd = move_cursor(Direction::Up, 1); break;
+				case 'l': cmd = move_cursor(Direction::Right, 1); break;
+
+				case 'J': cmd = move_cursor(Direction::Down, 10); break;
+				case 'K': cmd = move_cursor(Direction::Up, 10); break;
+
+				case '0': {
+					Buffer *active = ed_active();
+					u64 line_index = buffer_line_index_at(active, active->cursor);
+					auto range = buffer_line_range(active, line_index);
+					cmd = move_cursor(Direction::Absolute, range.begin);
+				} break;
+
+				case '$': case 'A': {
+					Buffer *active = ed_active();
+					u64 line_index = buffer_line_index_at(active, active->cursor);
+					auto range = buffer_line_range(active, line_index);
+					cmd = move_cursor(Direction::Absolute, range.end);
+
+					if (input.codepoint == 'A') {
+						ed_exec_command(cmd);
+						cmd = change_mode(Ed_Mode::Insert);
+					}
+				} break;
+
+				case '_': case 'I':
+				{
+					Buffer *active = ed_active();
+					u64 line_index = buffer_line_index_at(active, active->cursor);
+					auto range = buffer_line_range(active, line_index);
+					string line = buffer_slice(active, frame_arena(), range);
+
+					u64 i=0;
+					for (;i<line.len && is_space(line[i]); ++i)
+						;
+
+					cmd = move_cursor(Direction::Absolute, range.begin + i);
+					if (input.codepoint == 'I') {
+						ed_exec_command(cmd);
+						cmd = change_mode(Ed_Mode::Insert);
+					}
+				} break;
+
 			}
-			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
 
-			auto draw_list = ui_end_frame();
-			ui_draw_cmd_list(draw_list);
-		} else if (ed_mode() == Mode_Buffer_Search) {
-			ui_begin_frame(window_rect, 0, Layout_Row, Pad_XY(0, 100), Hex(0x00000066));
+			ed_exec_command(cmd);
+		}
+		else if (curr_mode == Ed_Mode::Command) {
+			switch (input.codepoint) {
+				case '\x1b': {
+					Ed_Cmd cmd = change_mode(Ed_Mode::Normal);
+					ed_exec_command(cmd);
+				} break;
 
-			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
-			UI(
-				.size = {
-					{ Size_Fill, 1.0f },
-					{ Size_Fill, 1.0f }
-				},
-				.padding = Pad(5),
-				.radius = 10,
-				.border = 1.0f,
-				.color = Color::bg,
-				.border_color = Color::dim,
-				.layout = Layout_Col,
-			) {
-				Buffer *buf = ed_buffer_list();
-				for(;buf; buf = buf->next) {
-					if (buf == ed_active_buffer())  {
-						UI(
-							.size = {
-								{ Size_Fill, 1.0f },
-								{ Size_Fixed, graphics_line_height() }
-							},
-							.radius = 5,
-							.color = Color::dim,
-						) {
-							UI(
-								.size = {
-									{ Size_Fill, 1.0f },
-									{ Size_Fill, 1.0f }
-								},
-								.color = Color::bg,
-								.text = buf->path,
-							);
-						}
-					} else {
-						UI(
-							.size = {
-								{ Size_Fill, 1.0f },
-								{ Size_Fixed, graphics_line_height() }
-							},
-							.color = Color::dim,
-							.text = buf->path,
-						);
+				case '\x7F': { // delete
+					Ed_Cmd cmd = delete_string(Direction::Right, 1);
+					ed_exec_command(cmd);
+				} break;
+
+				case '\b': { // backspace
+					Ed_Cmd cmd = delete_string(Direction::Left, 1);
+					ed_exec_command(cmd);
+				} break;
+
+				case '\n': {
+					Temp t0 = temp_begin(scratch());
+					defer(temp_end(t0));
+
+					slice<string> args = ed_command_strings(scratch());
+
+					Ed_Cmd cmd = parse_command(args);
+					ed_exec_command(cmd);
+
+					cmd = change_mode(Ed_Mode::Normal);
+					ed_exec_command(cmd);
+				}
+
+				default: {
+					if (!unicode_visual_rune(input.codepoint))
+						break;
+
+					Ed_Cmd cmd = insert_string(
+						utf8_encode(input.codepoint, frame_arena())
+					);
+					ed_exec_command(cmd);
+				} break;
+			}
+		}else if (curr_mode == Ed_Mode::Insert) {
+			switch (input.codepoint) {
+				case '\x1b': { // escape
+					Ed_Cmd cmd = change_mode(Ed_Mode::Normal);
+					ed_exec_command(cmd);
+				} break;
+
+				case '\x7F': { // delete
+					Ed_Cmd cmd = delete_string(Direction::Right, 1);
+					ed_exec_command(cmd);
+				} break;
+
+				case '\b': { // backspace
+					Ed_Cmd cmd = delete_string(Direction::Left, 1);
+					ed_exec_command(cmd);
+				} break;
+
+				default: {
+					string fmt = format_user_input(input.codepoint, frame_arena());
+					if (fmt.len) {
+						Ed_Cmd cmd = insert_string(fmt);
+						ed_exec_command(cmd);
+					}
+				} break;
+			}
+		}
+        
+		gfx_begin();
+		defer(gfx_submit());
+        
+		ivec2 win_size = os_window_size(win);
+		Rect win_rect = { {0, 0}, { (f32) win_size.x, (f32) win_size.y } };
+		gfx_set_viewport(win_size.x, win_size.y);
+        
+		gfx_push_clip(win_rect, frame_arena());
+		defer(gfx_pop_clip());
+        
+		UI_Config root = {};
+		root.layout = Layout_Col;
+		root.color = Color::bg;
+		root.gap = 1.0f;
+
+		ui_begin_frame(win_rect, root);
+	
+		UI_Box *panel = nullptr;
+
+		UI(STYLES[Pane]) {
+			panel = __this_box__;
+		}
+
+		UI(STYLES[Status_Line]) {
+			ui_text(modal_string(ed_mode()), Color::bg, Align_Start, Size_Fill);
+
+
+	
+			string file_name = ed_active() ? ed_active()->path : S("- no file -");
+			string directory = ed_directory();
+
+			string right = string_format(frame_arena(), "%.*s | %.*s", S_FMT(directory), S_FMT(file_name));
+			ui_text(right, Color::bg, Align_End, Size_Fill);
+		}
+        
+		ui_end_frame();
+		ui_draw();
+
+		draw_buffer_view(ed_active(), panel->rect);
+
+		if (ed_mode() == Ed_Mode::Command) {
+			draw_buffer_view(ed_active(), panel->rect);
+			root.padding = Pad_XY(0, 50);
+			root.layout = Layout_Row;
+			root.color = Hex(0x000000aa);
+
+			ui_begin_frame(win_rect, root);
+
+			UI_Config pad = {
+				UI_Invisible,
+				{
+					{Size_Fill, 1.0f},
+					{Size_Fill, 1.0f}
+				}
+			};
+			pad.layout = Layout_Row;
+			UI(pad);
+			UI(STYLES[Command_Box]) {
+				pad.size.h = {Size_Fit};
+				UI(pad) {
+					string cmd_string = ed_command_string();
+					ui_text(cmd_string.len ? cmd_string : S("Run Command.."), Color::dim);
+
+					if (cmd_string.len)  {
+						UI_Config cursor = {
+							0,
+							{
+								{Size_Fixed, 2},
+								{Size_Fill, 1.0}
+							}
+						};
+						cursor.color = Color::fg;
+						UI(cursor);
 					}
 				}
+
 			}
-			UI( .flags = UI_Invisible, .size = { {Size_Fill, 1.0}, {Size_Fill, 1.0}, },);
+			UI(pad);
 
-			auto draw_list = ui_end_frame();
-			ui_draw_cmd_list(draw_list);
+			ui_end_frame();
+			ui_draw();
 		}
-
-		graphics_submit_draw();
-
-		arena_free(ed_frame_arena());
 	}
-
-	graphics_deinit();
-	ed_deinit();
 }
