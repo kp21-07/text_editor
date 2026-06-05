@@ -3,21 +3,14 @@
 
 #include <math.h>
 
-enum UI_Classes {
-	Status_Line,
-	Command_Box,
-	Pane,
-	Class_Count,
-};
-
 funcdef string
 format_user_input(rune codepoint, Arena *frame_arena, Ed_Cmd *post)
 {
 	if (codepoint == '\n') {
 		Buffer *buf = ed_active();
-		u64 line_index = buffer_line_index_at(buf, buf->cursor);
+		u64 line_index = buffer_line_index_at(buf, buffer_cursor(buf));
 		Range_u64 range = buffer_line_range(buf, line_index);
-		range.end = Min(range.end, buf->cursor);
+		range.end = Min(range.end, buffer_cursor(buf));
 		string line = buffer_slice(buf, frame_arena, range);
 
 		u64 i=0;
@@ -71,77 +64,6 @@ format_user_input(rune codepoint, Arena *frame_arena, Ed_Cmd *post)
 		return utf8_encode(codepoint, frame_arena);
 	}
 	return {};
-}
-
-global UI_Config STYLES[Class_Count];
-
-funcdef void
-set_default_style() {
-	STYLES[Status_Line] = {
-		UI_Clip_Children,
-		{
-			{ Size_Fill, 1.0f },
-			{ Size_Fixed, gfx_line_height() }
-		},
-		Pad(2),
-
-		4.0f, // rounding
-		0.0f, // border
-
-		Color::dim, // color
-		0x0, // text color
-		0x0, // border color
-
-		{}, // text
-
-		2, // gap
-		Layout_Row,
-		Align_Start,
-	};
-
-	STYLES[Command_Box] = {
-		UI_Clip_Children,
-		{
-			{ Size_Fill, 3.0f },
-			{ Size_Fit }
-		},
-		Pad(10),
-
-		10.0f, // rounding
-		1.0f, // border
-
-		Color::bg, // color
-		0x0, // text color
-		Color::dim, // border color
-
-		{}, // text
-
-		5, // gap
-		Layout_Col,
-		Align_Center,
-	};
-
-	STYLES[Pane] = {
-		UI_Invisible,
-		{
-			{ Size_Fill, 1.0f },
-			{ Size_Fill, 1.0f }
-		},
-		Pad(5),
-
-		0.0f, // rounding
-		0.0f, // border
-
-		0x0, // color
-		0x0, // text color
-		0x0, // border color
-
-		{}, // text
-
-		1, // gap
-		Layout_Row,
-		Align_Center,
-	};
 }
 
 funcdef Ed_Cmd
@@ -204,7 +126,6 @@ void entry_point(slice<string> args)
 	defer(gfx_deinit());
     
 	ui_init(frame_arena());
-	set_default_style();
 
 	while(!os_window_should_close(win)) {
 		arena_free(frame_arena());
@@ -222,26 +143,26 @@ void entry_point(slice<string> args)
 				case 'j': cmd = move_cursor(Direction::Down, 1); break;
 				case 'k': cmd = move_cursor(Direction::Up, 1); break;
 				case 'l': cmd = move_cursor(Direction::Right, 1); break;
-				case 'w': cmd = jump_to_word_start(Direction::Right); break;
-
-				case 'a': {
-					ed_exec_command(move_cursor(Direction::Right, 1));
-					cmd = change_mode(Ed_Mode::Insert);
-				} break;
 
 				case 'J': cmd = move_cursor(Direction::Down, 10); break;
 				case 'K': cmd = move_cursor(Direction::Up, 10); break;
 
+				case 'G': {
+					Buffer *active = ed_active();
+					u64 line_idx = buffer_line_count(active);
+					cmd = jump_to_line(line_idx);
+				} break;
+
 				case '0': {
 					Buffer *active = ed_active();
-					u64 line_index = buffer_line_index_at(active, active->cursor);
+					u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
 					auto range = buffer_line_range(active, line_index);
 					cmd = move_cursor(Direction::Absolute, range.begin);
 				} break;
 
 				case '$': case 'A': {
 					Buffer *active = ed_active();
-					u64 line_index = buffer_line_index_at(active, active->cursor);
+					u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
 					auto range = buffer_line_range(active, line_index);
 					cmd = move_cursor(Direction::Absolute, range.end);
 
@@ -254,7 +175,7 @@ void entry_point(slice<string> args)
 				case '_': case 'I':
 				{
 					Buffer *active = ed_active();
-					u64 line_index = buffer_line_index_at(active, active->cursor);
+					u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
 					auto range = buffer_line_range(active, line_index);
 					string line = buffer_slice(active, frame_arena(), range);
 
@@ -269,6 +190,24 @@ void entry_point(slice<string> args)
 					}
 				} break;
 
+				case 'L': {
+					OS_TimeStamp t1 = os_time_now();
+					defer(
+						printf("ms%f\n", os_time_diff(t1, os_time_now()).seconds);
+					);
+
+					// slice<string> files = os_list_files(frame_arena(), ed_directory());
+				} break;
+
+				case '-': {
+					f32 curr_height = gfx_get_font_height();
+					gfx_set_font_height(Max(curr_height - 2, 12));
+				} break;
+
+				case '+' : {
+					f32 curr_height = gfx_get_font_height();
+					gfx_set_font_height(Min(curr_height + 2, 120));
+				} break;
 			}
 
 			ed_exec_command(cmd);
@@ -354,27 +293,68 @@ void entry_point(slice<string> args)
         
 		UI_Config root = {};
 		root.layout = Layout_Col;
-		root.color = Color::bg;
+		root.color = g_config.theme.background;
 		root.gap = 1.0f;
 
 		ui_begin_frame(win_rect, root);
 	
 		UI_Box *panel = nullptr;
 
-		UI(STYLES[Pane]) {
+		UI_Config c_panel = {};
+		c_panel.flags = UI_Invisible;
+		c_panel.size.w = { Size_Fill, 1.0f };
+		c_panel.size.h = { Size_Fill, 1.0f };
+		c_panel.padding = Pad(5);
+		c_panel.gap = 1;
+
+		UI(c_panel) {
 			panel = __this_box__;
 		}
 
-		UI(STYLES[Status_Line]) {
-			ui_text(modal_string(ed_mode()), Color::bg, Align_Start, Size_Fill);
+		UI_Config c_status = {};
+		c_status.size.w = { Size_Fill, 1.0f };
+		c_status.size.h = { Size_Fixed, gfx_line_height() + 4};
+		c_status.padding = Pad(2);
+		c_status.gap = 2;
+		c_status.layout = Layout_Row;
+		c_status.color = g_config.theme.status_line_dim;
 
+		UI(c_status) {
 
-	
+			UI_Config container = {};
+			container.size.w = { Size_Fit, 0.0};
+			container.size.h = { Size_Fit, 0.0};
+			container.color = g_config.theme.gutter_foreground;
+			container.radius = gfx_line_height() * 0.2f;
+
+			UI(container) {
+				ui_text(
+					modal_string(ed_mode()),
+					g_config.theme.background,
+					Align_Start,
+					Size_Fixed
+				);
+			}
+
 			string file_name = ed_active() ? ed_active()->path : S("- no file -");
+
 			string directory = ed_directory();
 
-			string right = string_format(frame_arena(), "%.*s | %.*s", S_FMT(directory), S_FMT(file_name));
-			ui_text(right, Color::bg, Align_End, Size_Fill);
+			Buffer *buf = ed_active();
+
+			string right;
+			if (buf) {
+				right = buf->path;
+			} else {
+				right = ed_directory();
+			}
+
+			ui_text(
+				right,
+				g_config.theme.gutter_foreground,
+				Align_End,
+				Size_Fill
+			);
 		}
         
 		ui_end_frame();
@@ -384,9 +364,12 @@ void entry_point(slice<string> args)
 
 		if (ed_mode() == Ed_Mode::Command) {
 			draw_buffer_view(ed_active(), panel->rect);
+
 			root.padding = Pad_XY(0, 50);
-			root.layout = Layout_Row;
-			root.color = Hex(0x000000aa);
+			root.layout  = Layout_Row;
+
+			// modal backdrop
+			root.color = (g_config.theme.background_dim & Hex(0xFFFFFF00)) | Hex(0xAA);
 
 			ui_begin_frame(win_rect, root);
 
@@ -398,31 +381,57 @@ void entry_point(slice<string> args)
 				}
 			};
 			pad.layout = Layout_Row;
+
 			UI(pad);
-			UI(STYLES[Command_Box]) {
+
+			UI_Config c_cmd = {};
+			c_cmd.flags = UI_Clip_Children;
+			c_cmd.size.w = { Size_Fill, 3.0f };
+			c_cmd.size.h = { Size_Fit, 0.0f };
+			c_cmd.padding = Pad(10);
+			c_cmd.radius = 10.0f;
+			c_cmd.border = 1.0f;
+			c_cmd.color = g_config.theme.background;
+			c_cmd.border_color = g_config.theme.border;
+
+			UI(c_cmd) {
 				pad.size.h = {Size_Fit};
+
 				UI(pad) {
 					string cmd_string = ed_command_string();
-					ui_text(cmd_string.len ? cmd_string : S("Run Command.."), Color::dim);
+					u32 color = g_config.theme.foreground;
 
-					if (cmd_string.len)  {
+					bool draw_cursor = true;
+
+					if (!cmd_string.len) {
+						color = g_config.theme.gutter_foreground;
+						cmd_string = S("Run Command..");
+						draw_cursor = false;
+					}
+
+					ui_text(cmd_string, color);
+
+					if (draw_cursor) {
 						UI_Config cursor = {
 							0,
 							{
 								{Size_Fixed, 2},
-								{Size_Fill, 1.0}
+								{Size_Fill, 1.0f}
 							}
 						};
-						cursor.color = Color::fg;
+
+						cursor.color = g_config.theme.cursor;
+
 						UI(cursor);
 					}
 				}
-
 			}
+
 			UI(pad);
 
 			ui_end_frame();
 			ui_draw();
+
 		}
 	}
 }

@@ -110,6 +110,9 @@ funcdef string
 string_copy(Arena *arena, string s)
 {
 	bytes data = alloc_slice(arena, u8, s.len);
+	if (!data.len)
+		return S("");
+
 	memcpy(data.raw, s.raw, s.len);
 	return string_from_bytes(data);
 }

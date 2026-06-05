@@ -3,18 +3,38 @@
 
 #include "editor.h"
 
-const f32 FONT_HEIGHT = 30.0f;
+const f32 FONT_HEIGHT = 26.0f;
 const u64 TAB_WIDTH   = 2;
 
-struct Color {
-	global const u32 bg          = Hex(0x1B1816FF); // main background
-	global const u32 bg_alt      = Hex(0x26211EFF); // panels, gutters
-	global const u32 fg          = Hex(0xE3D7C3FF); // primary text
-	global const u32 dim         = Hex(0x8C8276FF); // comments, inactive text
-	global const u32 accent      = Hex(0xD19A66FF); // warm amber
-	global const u32 cursor      = Hex(0xF0C674FF); // bright gold
-	global const u32 error       = Hex(0xD16969FF); // muted red
+struct Theme {
+	u32 background         = Hex(0x1A1B1EFF);
+	u32 foreground         = Hex(0xD8D9DAFF);
+	u32 background_dim     = Hex(0x121316FF);
+
+	u32 cursor             = Hex(0xE6B35AFF);
+	u32 cursor_text        = Hex(0x1A1B1EFF);
+
+	u32 line_highlight     = Hex(0x25272CFF);
+	u32 current_line       = Hex(0x2E3138FF);
+
+	u32 gutter             = Hex(0x16171AFF);
+	u32 gutter_foreground  = Hex(0x6B7078FF);
+
+	u32 border             = Hex(0x353941FF);
+
+	u32 status_line        = Hex(0x25272CFF);
+	u32 status_line_dim    = Hex(0x1C1D21FF);
+
+	u32 error              = Hex(0xE06C75FF);
+	u32 accent             = Hex(0x61AFEFFF);
 };
+
+
+struct Config {
+	Theme theme;
+};
+
+global Config g_config;
 
 #include "embed.dat"
 

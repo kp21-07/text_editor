@@ -4,13 +4,14 @@
 //////////
 // ~gaureesh @NOTE: base types
 
-#include <stdint.h> // for fixed size integers.
-#include <assert.h> // for assert macro.
-#include <string.h> // for memmove, memcpy etc. ( not for cstd string functions ).
-#include <stdarg.h> // for va_args.
-#include <stdio.h>  // standard io operations.
+#include <stdint.h>
+#include <assert.h>
+#include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <math.h>
+#include <stdlib.h>
 
 typedef uint8_t  u8;
 typedef  int8_t  s8;
@@ -320,6 +321,7 @@ funcdef bool        os_write_to_file(string path, bytes data);
 funcdef void os_set_working_dir(string dir);
 funcdef string os_get_working_dir(Arena *arena);
 funcdef string os_path_canonical(Arena *arena, string path);
+// funcdef slice<string> os_list_files(Arena *arena, string path);
 
 
 //////////////
@@ -379,6 +381,9 @@ struct Render_Clip {
 
 funcdef void gfx_init(OS_Handle window, Arena *persist);
 funcdef void gfx_deinit();
+
+funcdef void gfx_set_font_height(f32 height);
+funcdef f32  gfx_get_font_height();
 
 funcdef void gfx_begin();
 funcdef void gfx_submit();
@@ -478,7 +483,7 @@ funcdef void ui_begin_frame(Rect rect, UI_Config frame_config);
 funcdef void ui_end_frame();
 funcdef void ui_draw();
 
-#define UI(_cfg) for (UI_Box *__this_box__ = ui_open(_cfg); __this_box__; ui_close(), __this_box__ = nullptr)
+#define UI(_cfg) for (UI_Box *__this_box__ = ui_open((_cfg)); __this_box__; ui_close(), __this_box__ = nullptr)
 
 // ~geb: components
 
@@ -531,6 +536,7 @@ enum class Direction {
 
 funcdef Load_Error buffer_init(Buffer *buffer, string path);
 funcdef void       buffer_deinit(Buffer *buffer);
+funcdef u64        buffer_line_count(Buffer *buffer);
 funcdef u64        buffer_line_index_at(Buffer *buffer, u64 buf_index);
 funcdef Range_u64  buffer_line_range(Buffer *buffer, u64 line_index);
 funcdef string     buffer_slice(Buffer *buffer, Arena *arena, Range_u64 rang);
@@ -539,8 +545,6 @@ funcdef void       buffer_delete(Buffer *buffer, u64 count, Direction direction)
 funcdef void       buffer_move_cursor(Buffer *buf, u64 amount, Direction dir);
 funcdef rune       buffer_char_at(Buffer *buf, s64 index);
 funcdef u64        buffer_cursor(Buffer *buf);
-
-funcdef u64 buffer_next_word_start(Buffer *buffer, u64 pos);
 
 struct Buffer_Map {
 	slice<Buffer> table;
@@ -578,16 +582,13 @@ enum Ed_CmdKind {
 	Cmd_In_Palette_End,
 
 
+
 	Cmd_Mode_Change,
 	Cmd_Cursor_Move,
 	Cmd_Insert_String,
 	Cmd_Delete_String,
 	Cmd_Jump_To_Line,
 	Cmd_Workspace_Open,
-
-	Cmd_Jump_Word_Start,
-	Cmd_Jump_Word_End,
-
 	Cmd_Count,
 };
 
@@ -633,8 +634,6 @@ funcdef Ed_Cmd move_cursor(Direction dir, u64 count);
 funcdef Ed_Cmd insert_string(string str);
 funcdef Ed_Cmd delete_string(Direction dir, u64 count);
 funcdef Ed_Cmd jump_to_line(u64 line);
-funcdef Ed_Cmd jump_to_word_start(Direction dir);
-funcdef Ed_Cmd jump_to_word_end(Direction dir);
 
 funcdef string cmd_function(Ed_CmdKind kind);
 

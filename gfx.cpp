@@ -6,7 +6,7 @@
 #include "vendor/glad.h"
 #include "vendor/stb_truetype.h"
 
-#define ATLAS_SIZE   512
+#define ATLAS_SIZE   1024
 #define FIRST_CHAR   32
 #define NUM_CHARS    96
 #define MAX_VERTICES 4098
@@ -15,6 +15,7 @@
 
 funcdef u32 gfx__compile_shader(int type, string src);
 funcdef Rect gfx__rect_intersect(Rect a, Rect b);
+funcdef void gfx__rebuild_font_atlas(f32 pixel_height);
 
 enum {
 	Uniform_Resolution,
@@ -49,6 +50,7 @@ static struct  {
 	stbtt_fontinfo  font;
 	stbtt_bakedchar baked_chars[NUM_CHARS];
 	f32 ascent, line_height;
+	f32 font_height;
 
 	Render_Clip *clip_stack;
 } gfx_ctx;
@@ -191,38 +193,8 @@ gfx_init(OS_Handle window, Arena *persist)
 	}
 
 	{
-		Temp t = temp_begin(persist);
-		defer(temp_end(t));
-
-		const int   atlas_w      = ATLAS_SIZE;
-		const int   atlas_h      = ATLAS_SIZE;
-		const float pixel_height = FONT_HEIGHT;
-
-		bytes bitmap    = alloc_slice(persist, u8, atlas_w * atlas_h);
-		bytes ttf_buffer = FALLBACK_FONT;
-
-		stbtt_InitFont(&gfx_ctx.font, ttf_buffer.raw, 0);
-
-		int result = stbtt_BakeFontBitmap(
-			ttf_buffer.raw, 0, pixel_height,
-			bitmap.raw, atlas_w, atlas_h,
-			FIRST_CHAR, NUM_CHARS,
-			gfx_ctx.baked_chars
-		);
-
-		if (result <= 0)
-			printf("Font bake failed\n");
-
-		int ascent, descent, line_gap;
-		stbtt_GetFontVMetrics(&gfx_ctx.font, &ascent, &descent, &line_gap);
-		float scale     = stbtt_ScaleForPixelHeight(&gfx_ctx.font, pixel_height);
-		gfx_ctx.ascent      = ascent * scale;
-		gfx_ctx.line_height = (ascent - descent + line_gap) * scale;
-
 		glGenTextures(1, &gfx_ctx.textures[Texture_Font]);
 		glBindTexture(GL_TEXTURE_2D, gfx_ctx.textures[Texture_Font]);
-
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, atlas_w, atlas_h, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap.raw);
 
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -233,6 +205,8 @@ gfx_init(OS_Handle window, Arena *persist)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ONE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+
+		gfx_set_font_height(FONT_HEIGHT);
 	}
 
 	glActiveTexture(GL_TEXTURE0);
@@ -245,6 +219,30 @@ gfx_init(OS_Handle window, Arena *persist)
 
 	ivec2 size = os_window_size(window);
 	gfx_set_viewport(size.x, size.y);
+}
+
+
+funcdef void
+gfx_set_font_height(f32 height)
+{
+	if (height <= 0)
+		return;
+
+	gfx_ctx.font_height = height;
+
+	gfx__rebuild_font_atlas(height);
+
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(
+		GL_TEXTURE_2D,
+		gfx_ctx.textures[Texture_Font]
+	);
+}
+
+funcdef f32
+gfx_get_font_height()
+{
+	return gfx_ctx.font_height;
 }
 
 funcdef void
@@ -400,8 +398,8 @@ draw_text(string s, vec2 start_pos, u32 color)
 				stbtt_aligned_quad q;
 				stbtt_GetBakedQuad(
 					gfx_ctx.baked_chars,
-					512,
-					512,
+					ATLAS_SIZE,
+					ATLAS_SIZE,
 					' ' - FIRST_CHAR,
 					&x,
 					&y,
@@ -425,8 +423,8 @@ draw_text(string s, vec2 start_pos, u32 color)
 		stbtt_aligned_quad q;
 		stbtt_GetBakedQuad(
 			gfx_ctx.baked_chars,
-			512,
-			512,
+			ATLAS_SIZE,
+			ATLAS_SIZE,
 			(int)(c - FIRST_CHAR),
 			&x,
 			&y,
@@ -443,7 +441,7 @@ draw_text(string s, vec2 start_pos, u32 color)
 			draw_quad(
 				pos,
 				dims,
-				invalid ? Color::error : color,
+				invalid ? g_config.theme.error : color,
 				Texture_Font,
 				uv0,
 				uv1,
@@ -643,4 +641,66 @@ gfx__rect_intersect(Rect a, Rect b)
 	result.size.y = Max(0.0f, y1 - y0);
 
 	return result;
+}
+
+
+funcdef void
+gfx__rebuild_font_atlas(f32 pixel_height)
+{
+	Temp t = temp_begin(gfx_ctx.persist);
+	defer(temp_end(t));
+
+	bytes bitmap     = alloc_slice(t.arena, u8, ATLAS_SIZE * ATLAS_SIZE);
+	bytes ttf_buffer = FALLBACK_FONT;
+
+	assert(ttf_buffer.raw);
+
+	stbtt_InitFont(&gfx_ctx.font, ttf_buffer.raw, 0);
+
+	int result = stbtt_BakeFontBitmap(
+		ttf_buffer.raw,
+		0,
+		pixel_height,
+		bitmap.raw,
+		ATLAS_SIZE,
+		ATLAS_SIZE,
+		FIRST_CHAR,
+		NUM_CHARS,
+		gfx_ctx.baked_chars
+	);
+
+	assert(result > 0);
+
+	int ascent, descent, line_gap;
+	stbtt_GetFontVMetrics(
+		&gfx_ctx.font,
+		&ascent,
+		&descent,
+		&line_gap
+	);
+
+	f32 scale = stbtt_ScaleForPixelHeight(
+		&gfx_ctx.font,
+		pixel_height
+	);
+
+	gfx_ctx.ascent      = ascent * scale;
+	gfx_ctx.line_height = (ascent - descent + line_gap) * scale;
+
+	glBindTexture(
+		GL_TEXTURE_2D,
+		gfx_ctx.textures[Texture_Font]
+	);
+
+	glTexImage2D(
+		GL_TEXTURE_2D,
+		0,
+		GL_R8,
+		ATLAS_SIZE,
+		ATLAS_SIZE,
+		0,
+		GL_RED,
+		GL_UNSIGNED_BYTE,
+		bitmap.raw
+	);
 }

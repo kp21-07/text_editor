@@ -1,13 +1,5 @@
 @echo off
 
-if not exist bin (
-    mkdir bin
-)
+if not exist bin mkdir bin
 
-zig c++ .\build\build.cpp ^
-    -o bin\editor.exe ^
-    -O0 ^
-    -g3 ^
-    -std=c++11 ^
-    -lopengl32 ^
-    -lgdi32
+zig c++ .\build\build.cpp -o .\bin\editor.exe -O0 -g -std=c++11 -fsanitize=undefined

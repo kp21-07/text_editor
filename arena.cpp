@@ -11,7 +11,7 @@ arena_make(u64 reserve)
 	}
 
 	Arena *result = (Arena *) mem;
-	
+
 	u64 commit_size = Align_Up_Power_2(sizeof(Arena), PAGE_SIZE);
 	assert(os_commit(mem, commit_size) && "failed to do initial arena commit");
 

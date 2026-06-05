@@ -1,5 +1,11 @@
 #include "editor.h"
 
+struct Panel {
+	string file;
+	Panel *first;
+	Panel *second;
+};
+
 global struct {
 	Arena *persist_arena;
 	Arena *frame_arena;
@@ -13,8 +19,24 @@ global struct {
 
 	list<u8> cmd_string;
 	Buffer_Map buffer_map;
+
+	Panel *panel_root;
+	Panel *panel_free;
 } ed_ctx;
 
+
+funcdef void
+ed__init_workspace()
+{
+	buffer_map_clear(&ed_ctx.buffer_map);
+
+	arena_free(ed_ctx.workspace_arena);
+	ed_ctx.working_dir = os_get_working_dir(ed_ctx.workspace_arena);
+	ed_ctx.buffer_map = buffer_map_make(ed_ctx.workspace_arena, 128);
+	ed_ctx.active_buffer = nullptr;
+	ed_ctx.panel_root = alloc_struct(ed_ctx.workspace_arena, Panel);
+	ed_ctx.panel_free = nullptr;
+}
 
 funcdef void
 ed_init()
@@ -24,9 +46,7 @@ ed_init()
 	ed_ctx.modal_arena   = arena_make(MB(4));
 	ed_ctx.workspace_arena = arena_make(MB(4));
 
-	ed_ctx.working_dir = os_get_working_dir(ed_ctx.workspace_arena);
-	ed_ctx.buffer_map = buffer_map_make(ed_ctx.workspace_arena, 128);
-	ed_ctx.active_buffer = nullptr;
+	ed__init_workspace();
 }
 
 funcdef void
@@ -172,12 +192,19 @@ ed_exec_command(Ed_Cmd cmd)
 		{
 			arena_free(ed_ctx.modal_arena);	
 
+
 			switch(cmd.arg_mode) {
+				case Ed_Mode::Insert:
+					if (ed_active() == nullptr)
+						return;
+					break;
 				case Ed_Mode::Command:
 					ed_ctx.cmd_string = list_make(
 						alloc_slice(ed_ctx.modal_arena, u8, 128)
 					);
-				default: break;
+					break;
+				default:
+					break;
 			}
 
 			clear(&ed_ctx.cmd_string);
@@ -221,33 +248,12 @@ ed_exec_command(Ed_Cmd cmd)
         {
 			string path = cmd.arg_string;
 			os_set_working_dir(path);
-
-			buffer_map_clear(&ed_ctx.buffer_map);
-
-			arena_free(ed_ctx.workspace_arena);
-
-			ed_ctx.working_dir = os_get_working_dir(ed_ctx.workspace_arena);
-			ed_ctx.buffer_map = buffer_map_make(ed_ctx.workspace_arena, 128);
-			ed_ctx.active_buffer = nullptr;
+			ed__init_workspace();
         } break;
 
-		case Cmd_Jump_Word_Start:
-		{
-			Direction dir = cmd.arg_dir;
-			Buffer *active = ed_active();
-			
-			if (dir == Direction::Right) {
-				u64 loc = buffer_next_word_start(active, buffer_cursor(active));
-				buffer_move_cursor(active, loc, Direction::Absolute);
-			}
-			
-
-		} break;
-
-		case Cmd_Jump_Word_End:
-		{
-			Direction dir = cmd.arg_dir;	
-		} break;
+        case Cmd_Exit:
+        {
+        } break;
 
         default: break;
     }
@@ -352,26 +358,6 @@ jump_to_line(u64 line)
 	cmd.arg_u64 = line;
 	return cmd;
 }
-
-funcdef Ed_Cmd
-jump_to_word_start(Direction dir)
-{
-	Ed_Cmd cmd = {};
-	cmd.kind = Cmd_Jump_Word_Start;
-	cmd.arg_dir = dir;
-	return cmd;
-}
-
-funcdef Ed_Cmd
-jump_to_word_end(Direction dir)
-{
-	Ed_Cmd cmd = {};
-	cmd.kind = Cmd_Jump_Word_End;
-	cmd.arg_dir = dir;
-	return cmd;
-}
-
-
 
 
 funcdef string

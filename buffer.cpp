@@ -112,10 +112,20 @@ buffer_deinit(Buffer *buffer)
 }
 
 
+funcdef u64 
+buffer_line_count(Buffer *buffer)
+{
+	if (!buffer)
+		return 0;
+
+	return buffer->lines.len;
+}
+
 funcdef u64
 buffer_line_index_at(Buffer *buffer, u64 buf_index)
 {
-	if (!buffer) return 0;
+	if (!buffer)
+		return 0;
 
 	auto lines = buffer->lines.view();
 	u64 lower = 0;
@@ -364,18 +374,25 @@ buffer_map_clear(Buffer_Map *map)
 
 		buffer_deinit(&table[i]);
 	}
-
-	memset(map->table.raw, 0x0, sizeof(Buffer) * map->table.len);
 	map->count = 0;
+
+	if (map->table.raw) {
+		memset(map->table.raw, 0x0, sizeof(Buffer) * map->table.len);
+	}
 }
 
 funcdef Buffer *
 buffer_map_insert(Buffer_Map *map, const Buffer& buffer)
 {
+	Temp t = temp_begin(scratch());
+	defer(temp_end(t));
+
 	string path = buffer.path;
 	if (path.len == 0) {
 		return nullptr;
 	}
+
+	path = os_path_canonical(t.arena, path);
 
 	slice<Buffer> table = map->table;
 	u64 capacity = table.len;
@@ -399,18 +416,25 @@ buffer_map_insert(Buffer_Map *map, const Buffer& buffer)
 funcdef Buffer *
 buffer_map_get(Buffer_Map *map, string path)
 {
+	Temp t = temp_begin(scratch());
+	defer(temp_end(t));
+
+	path = os_path_canonical(t.arena, path);
 	slice<Buffer> table = map->table;
 	u64 capacity = table.len;
 	u64 index = hash_path(path) % capacity;
 
 	for(u64 i=0; i<capacity; ++i) {
+		Temp t2 = temp_begin(scratch());
+		defer(temp_end(t2));
 
 		if (!Flag_Check(table[index].flags, Buffer_Occupied))
 		{
 			return nullptr;
 		}
 
-		if (string_equal(table[index].path, path))
+		string path2 = os_path_canonical(t2.arena, table[index].path);
+		if (string_equal(path2, path))
 			return &table[index];
 
 		index = (index + 1) % capacity;
@@ -423,17 +447,24 @@ buffer_map_get(Buffer_Map *map, string path)
 funcdef bool
 buffer_map_remove(Buffer_Map *map, string path)
 {
+	Temp t = temp_begin(scratch());
+	defer(temp_end(t));
+
+	path = os_path_canonical(t.arena, path);
 	slice<Buffer> table = map->table;
 	u64 capacity = table.len;
 	u64 index = hash_path(path) % capacity;
 
 	for (u64 i=0; i<capacity; ++i) {
+		Temp t2 = temp_begin(scratch());
+		defer(temp_end(t2));
 
 		if (!Flag_Check(table[index].flags, Buffer_Occupied))
 			return false;
 
 
-		if (string_equal(table[index].path, path)) {
+		string path2 = os_path_canonical(t2.arena, table[index].path);
+		if (string_equal(path2, path)) {
 			buffer_deinit(&table[index]); // clears flags too
 		}
 
@@ -448,7 +479,6 @@ buffer_map_get_paths(Buffer_Map *map, Arena *arena)
 {
 	list<string> result = list_make(alloc_slice(arena, string, map->count));
 
-
 	for (u64 i=0; i<map->table.len; ++i) {
 		if (!Flag_Check(map->table[i].flags, Buffer_Occupied))
 			continue;
@@ -459,79 +489,14 @@ buffer_map_get_paths(Buffer_Map *map, Arena *arena)
 	return { result.raw, result.len };
 }
 
-
-funcdef u64
-buffer_next_word_start(Buffer *buffer, u64 pos)
-{
-    if (!buffer)
-        return 0;
-
-    string text = buffer->data.view();
-
-    if (pos >= text.len)
-        return text.len;
-
-    int width;
-    rune r = utf8_decode(text.range(pos, text.len), &width);
-
-    enum {
-        Class_Word,
-        Class_Space,
-        Class_Punct,
-    } cls;
-
-    CharKind ck = char_kind(r);
-
-    if (is_space(r))
-        cls = Class_Space;
-    else if (ck == Char_Letter || ck == Char_Number)
-        cls = Class_Word;
-    else
-        cls = Class_Punct;
-
-    while (pos < text.len) {
-        r = utf8_decode(text.range(pos, text.len), &width);
-        ck = char_kind(r);
-
-        int c;
-
-        if (is_space(r))
-            c = Class_Space;
-        else if (ck == Char_Letter || ck == Char_Number)
-            c = Class_Word;
-        else
-            c = Class_Punct;
-
-        if (c != cls)
-            break;
-
-        pos += width;
-    }
-
-    while (pos < text.len) {
-        r = utf8_decode(text.range(pos, text.len), &width);
-
-        if (!is_space(r))
-            break;
-
-        pos += width;
-    }
-
-    return pos;
-}
-
-funcdef u64
-buffer_prev_word_start(Buffer *buf, u64 pos)
-{
-
-}
-
-
 /////////////////////////////////////
+
 
 funcdef void
 draw_buffer_view(Buffer *buffer, Rect rect)
 {
+	Theme g_color = g_config.theme;
+
 	gfx_push_clip(rect, frame_arena());
 	defer(gfx_pop_clip());
 
@@ -541,7 +506,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 		f32 x = rect.from.x + (rect.size.x - dim.x) * 0.5f;
 		f32 y = rect.from.y + (rect.size.y - dim.y) * 0.5f;
 
-		draw_text(S(" no file "), {x, y}, Color::error);
+		draw_text(S(" no file "), {x, y}, g_color.error);
 		return;
 	}
 
@@ -575,6 +540,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 		buffer->target_scroll_y,
 		1.0f - expf(-20.0f * delta_time())
 	);
+	// buffer->scroll_y = buffer->target_scroll_y;
 
 	// gutter
 
@@ -610,7 +576,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 				{text_x, y},
 				{rect.size.x - gutter_width - 2, line_height},
 				5,
-				Color::bg_alt
+				g_color.background_dim
 			);
 		}
 
@@ -622,12 +588,21 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 		);
 
 		if (current_line) {
-			draw_quad_rounded({rect.from.x + gutter_pad, y}, {digit_width * gutter_digits, line_height}, 5, Color::dim);
+			draw_quad_rounded(
+				{rect.from.x + gutter_pad, y},
+				{digit_width * gutter_digits, line_height},
+				5,
+				g_color.gutter_foreground
+			);
 		}
 
-		draw_text(line_number, {rect.from.x + gutter_pad, y}, current_line ? Color::bg : Color::dim);
+		draw_text(
+			line_number,
+			{rect.from.x + gutter_pad, y},
+			current_line ? g_color.background : g_color.gutter_foreground
+		);
 
-		draw_text(line, {text_x, y}, Color::fg);
+		draw_text(line, {text_x, y}, g_color.foreground);
 
 		if (current_line && ed_mode() != Ed_Mode::Command) {
 			u64 cursor_offset = buffer->cursor - cursor_range.begin;
@@ -639,7 +614,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 			vec2 cursor_pos = {cursor_x, y};
 
 			if (ed_mode() != Ed_Mode::Insert) {
-				draw_capsule(cursor_pos, {space_width, line_height}, Color::cursor);
+				draw_capsule(cursor_pos, {space_width, line_height}, g_color.cursor);
 
 				if (cursor_offset < line.len) {
 					s32 width = 0;
@@ -648,10 +623,10 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 
 					string cursor_char = line.range(cursor_offset, cursor_offset + width);
 
-					draw_text(cursor_char, cursor_pos, Color::bg);
+					draw_text(cursor_char, cursor_pos, g_color.cursor_text);
 				}
 			} else {
-				draw_quad(cursor_pos, {2, line_height}, Color::cursor);
+				draw_quad(cursor_pos, {2, line_height}, g_color.cursor);
 			}
 		}
 

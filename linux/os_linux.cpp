@@ -1,4 +1,4 @@
-#include "../editor.cpp"
+#include "../editor.h"
 
 #include <unistd.h>
 #include <errno.h>
@@ -203,7 +203,7 @@ os_set_working_dir(string dir)
 	memcpy(path, dir.raw, len);
 	path[len] = '\0';
 
-	chdir(path);
+	int result = chdir(path);
 }
 
 funcdef string
@@ -213,28 +213,8 @@ os_get_working_dir(Arena *arena)
 	defer(temp_end(t0));
 
 	slice<char> temp_page = alloc_slice(scratch(), char, KB(4));
-	getcwd(temp_page.raw, temp_page.len);
+	char *cwd = getcwd(temp_page.raw, temp_page.len);
 
-	string str = { (u8 *) temp_page.raw, strlen(temp_page.raw) };
+	string str = { (u8 *) cwd, strlen(cwd) };
 	return string_copy(arena, str);
-}
-
-funcdef string
-os_path_canonical(Arena *arena, string path)
-{
-	Temp t0 = temp_begin(scratch());
-	defer(temp_end(t0));
-
-	auto temp_page = alloc_slice(scratch(), char, KB(4));
-
-	u64 copy_len = Min(path.len, 4098 - 1);
-	memcpy(temp_page.raw, path.raw, copy_len);
-	temp_page[copy_len] = '\0';
-
-	auto resolved = alloc_slice(scratch(), char, KB(4));
-	if (!realpath(temp_page.raw, resolved.raw)) {
-		return string_copy(arena, path);
-	}
-
-	return string_copy(arena, string{(u8 *) resolved.raw, strlen(resolved.raw)});
 }
