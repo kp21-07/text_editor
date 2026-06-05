@@ -317,7 +317,7 @@ void entry_point(slice<string> args)
 		c_status.padding = Pad(2);
 		c_status.gap = 2;
 		c_status.layout = Layout_Row;
-		c_status.color = g_config.theme.status_line_dim;
+		c_status.color = g_config.theme.background_dim;
 
 		UI(c_status) {
 
@@ -434,4 +434,4 @@ void entry_point(slice<string> args)
 
 		}
 	}
-}
+}

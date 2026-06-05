@@ -246,6 +246,7 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
 	case Direction::Absolute:
 	{
 		buf->cursor = amount;
+		buffer__sync_desired_column(buf);
 	} break;
 
 	case Direction::Left:
