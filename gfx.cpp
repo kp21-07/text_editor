@@ -360,110 +360,99 @@ draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 
 	append(&gfx_ctx.indices, (u16)(i + 0));
 }
 
-
 funcdef vec2
 draw_text(string s, vec2 start_pos, u32 color)
 {
-	f32 x = start_pos.x;
-	f32 y = start_pos.y + gfx_ctx.ascent;
+    f32 x = start_pos.x;
+    f32 y = start_pos.y + gfx_ctx.ascent;
 
-	f32 max_x = x;
-	f32 min_y = y;
-	f32 max_y = y;
+    f32 max_x = start_pos.x;
+    f32 lines = 1;
 
-	u64 column = 0;
+    u64 column = 0;
 
-	int width = 0;
-	for (int i = 0; i < (int)s.len; i += width) {
-		rune c = utf8_decode(s.range(i, s.len), &width);
+    int width = 0;
+    for (int i = 0; i < (int)s.len; i += width) {
+        rune c = utf8_decode(s.range(i, s.len), &width);
 
-		if (c == '\n') {
-			x  = start_pos.x;
-			y += gfx_line_height();
+        if (c == '\n') {
+            if (x > max_x) max_x = x;
 
-			column = 0;
+            x = start_pos.x;
+            y += gfx_line_height();
 
-			if (y > max_y) max_y = y;
-			continue;
-		}
+            column = 0;
+            lines += 1;
+            continue;
+        }
 
-		if (c == '\t') {
-			u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
+        if (c == '\t') {
+            u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
 
-			for (u64 t = 0; t < spaces; ++t) {
-				stbtt_aligned_quad q;
-				stbtt_GetBakedQuad(
-					gfx_ctx.baked_chars,
-					ATLAS_SIZE,
-					ATLAS_SIZE,
-					' ' - FIRST_CHAR,
-					&x,
-					&y,
-					&q,
-					1
-				);
-			}
+            for (u64 t = 0; t < spaces; ++t) {
+                stbtt_aligned_quad q;
+                stbtt_GetBakedQuad(
+                    gfx_ctx.baked_chars,
+                    ATLAS_SIZE,
+                    ATLAS_SIZE,
+                    ' ' - FIRST_CHAR,
+                    &x,
+                    &y,
+                    &q,
+                    1
+                );
+            }
 
-			column += spaces;
+            column += spaces;
 
-			if (x > max_x) max_x = x;
-			continue;
-		}
+            if (x > max_x) max_x = x;
+            continue;
+        }
 
-		bool invalid = false;
-		if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS) {
-			c = '?';
-			invalid = true;
-		}
+        bool invalid = false;
+        if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS) {
+            c = '?';
+            invalid = true;
+        }
 
-		if (c == '\r') {
-			c = '?';
-			invalid = true;
-		}
+        if (c == '\r') {
+            continue;
+        }
 
-		stbtt_aligned_quad q;
-		stbtt_GetBakedQuad(
-			gfx_ctx.baked_chars,
-			ATLAS_SIZE,
-			ATLAS_SIZE,
-			(int)(c - FIRST_CHAR),
-			&x,
-			&y,
-			&q,
-			1
-		);
+        stbtt_aligned_quad q;
+        stbtt_GetBakedQuad(
+            gfx_ctx.baked_chars,
+            ATLAS_SIZE,
+            ATLAS_SIZE,
+            (int)(c - FIRST_CHAR),
+            &x,
+            &y,
+            &q,
+            1
+        );
 
-		if (c != ' ') {
-			vec2 pos  = { q.x0, q.y0 };
-			vec2 dims = { q.x1 - q.x0, q.y1 - q.y0 };
-			vec2 uv0  = { q.s0, q.t0 };
-			vec2 uv1  = { q.s1, q.t1 };
+        if (c != ' ') {
+            draw_quad(
+                { q.x0, q.y0 },
+                { q.x1 - q.x0, q.y1 - q.y0 },
+                invalid ? g_config.theme.error : color,
+                Texture_Font,
+                { q.s0, q.t0 },
+                { q.s1, q.t1 },
+                {0,0},
+                {0,0}
+            );
+        }
 
-			draw_quad(
-				pos,
-				dims,
-				invalid ? g_config.theme.error : color,
-				Texture_Font,
-				uv0,
-				uv1,
-				{0,0},
-				{0,0}
-			);
+        column += 1;
 
-			if (q.y0 < min_y) min_y = q.y0;
-			if (q.y1 > max_y) max_y = q.y1;
-		}
+        if (x > max_x) max_x = x;
+    }
 
-		column += 1;
-
-		if (x > max_x) max_x = x;
-	}
-
-	vec2 result;
-	result.x = max_x - start_pos.x;
-	result.y = max_y - min_y;
-
-	return result;
+    return {
+        max_x - start_pos.x,
+        lines * gfx_line_height()
+    };
 }
 
 funcdef void

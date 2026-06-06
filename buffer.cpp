@@ -605,7 +605,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 			current_line ? g_color.background : g_color.gutter_foreground
 		);
 
-		draw_text(line, {text_x, y}, g_color.foreground);
+		vec2 size = draw_text(line, {text_x, y}, g_color.foreground);
 
 		if (current_line && ed_mode() != Ed_Mode::Command) {
 			u64 cursor_offset = buffer->cursor - cursor_range.begin;
@@ -633,6 +633,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 			}
 		}
 
-		y += line_height;
+		// y += line_height;
+		y += size.y;
 	}
 }

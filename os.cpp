@@ -229,4 +229,3 @@ os_load_entire_file(Arena *arena, string path)
 
 	return data;
 }
-
