@@ -7,7 +7,7 @@
 #include "vendor/stb_truetype.h"
 
 const u64 MAX_QUADS  = 4098;
-const u64 ATLAS_SIZE = 512;
+const u64 ATLAS_SIZE = 1024;
 const u64 FIRST_CHAR = 32;
 const u64 NUM_CHARS  = 96;
 
@@ -504,7 +504,7 @@ gfx_draw_text(string s, vec2 position, vec4 col, f32 max_width)
             gfx_draw_quad(
                 { q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0 },
                 { q.s0, q.t0, q.s1, q.t1 },
-                invalid ? color(0x00ff00ff) : col,
+                invalid ? color(0xff0000ff) : col,
                 0.0f,
                 0.0f,
                 1
@@ -657,6 +657,13 @@ funcdef f32
 line_height()
 {
 	return gfx_ctx.line_height;
+}
+
+
+funcdef f32 
+delta_time()
+{
+	return gfx_ctx.delta_time;
 }
 
 funcdef f32

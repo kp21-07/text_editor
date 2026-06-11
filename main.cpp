@@ -87,12 +87,6 @@ void entry_point(slice<string> args)
 				} break;
 
 				case 'L': {
-					OS_TimeStamp t1 = os_time_now();
-					defer(
-						printf("ms%f\n", os_time_diff(t1, os_time_now()).seconds);
-					);
-
-					// slice<string> files = os_list_files(frame_arena(), ed_directory());
 				} break;
 
 				case '-': {
@@ -185,7 +179,7 @@ void entry_point(slice<string> args)
 
 		UI_Config frame = {};
 		frame.flags = UI_Invisible;
-		frame.padding = Pad((u16) THEME.radius);
+		frame.padding = Pad((u16) 4);
 
 		gfx_begin();
 		ui_begin_frame(window_rect, frame);

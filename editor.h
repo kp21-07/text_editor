@@ -395,6 +395,7 @@ funcdef void gfx_draw_quad(vec4 dest, vec4 src, vec4 col, f32 radius = 0.0f, f32
 funcdef void gfx_push_clip(Quad rect);
 funcdef void gfx_pop_clip();
 
+funcdef f32  delta_time();
 funcdef f32  line_height();
 funcdef f32  char_pixels(rune c);
 

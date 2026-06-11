@@ -4,22 +4,25 @@
 #include <math.h>
 
 funcdef void
-buffer__build_lines(Buffer *buffer)
+buffer__build_lines(Buffer *buffer, u64 from)
 {
-	clear(&buffer->lines);
-	string data = buffer->data.view();
+    u64 line = buffer_line_index_at(buffer, from);
 
-	for(u64 i=0; i<data.len; ++i)
-	{
-		if (data[i] == '\n') {
-			Line entry = { i };
+    u64 scan_start = 0;
+    if (line > 0)
+        scan_start = buffer->lines[line - 1].index + 1;
 
-			append(&buffer->lines, entry);
-		}
-	}
+    buffer->lines.len = line;
 
-	Line eof_entry = { data.len };
-	append(&buffer->lines, eof_entry);
+    string data = buffer->data.view();
+
+    for (u64 i = scan_start; i < data.len; ++i)
+    {
+        if (data[i] == '\n')
+            append(&buffer->lines, {i});
+    }
+
+    append(&buffer->lines, {data.len});
 }
 
 funcdef void
@@ -74,7 +77,7 @@ buffer_init(Buffer *buffer, string path)
 
 			buffer->data = list_make(alloc_slice(buffer->arena, u8, KB(512)));
 			buffer->lines = list_make(alloc_slice(buffer->arena, Line, 2048));
-			buffer__build_lines(buffer);
+			buffer__build_lines(buffer, 0);
 			return Load_Invalid_Path;
 		}
 		buffer->file_kind = file_data.kind;
@@ -86,7 +89,7 @@ buffer_init(Buffer *buffer, string path)
 		if (err != Load_Ok) {
 			buffer->data = list_make(alloc_slice(buffer->arena, u8, KB(512)));
 			buffer->lines = list_make(alloc_slice(buffer->arena, Line, 2048));
-			buffer__build_lines(buffer);
+			buffer__build_lines(buffer, 0);
 			return err;
 		}
 
@@ -101,7 +104,7 @@ buffer_init(Buffer *buffer, string path)
 
 	u64 line_count = Max((string_count_lines(buf_string) * 2), 2048);
 	buffer->lines = list_make(alloc_slice(buffer->arena, Line, line_count));
-	buffer__build_lines(buffer);
+	buffer__build_lines(buffer, 0);
 
 	Flag_Set(buffer->flags, Buffer_Occupied);
 	return err;
@@ -191,11 +194,12 @@ buffer_insert(Buffer *buffer, string s)
 		list_realloc(&buffer->lines, required_size, buffer->arena);
 	}
 
+	u64 before_insert = buffer_cursor(buffer);
 	bytes insert_data = { (u8 *) s.raw, s.len };
 	insert_slice(&buffer->data, buffer->cursor, insert_data);
 	buffer->cursor += s.len;
 
-	buffer__build_lines(buffer);
+	buffer__build_lines(buffer, before_insert);
 	buffer__sync_desired_column(buffer);
 }
 
@@ -234,7 +238,7 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
     memmove(mem + start, mem + end, buf.len - end);
 	buffer->data.len -= (end - start);
 
-    buffer__build_lines(buffer);
+    buffer__build_lines(buffer, start);
     buffer__sync_desired_column(buffer);
 	Flag_Set(buffer->flags, Buffer_Dirty);
 }
@@ -537,12 +541,12 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 
 	f32 max_scroll = Max(lines.len * line_h - rect.size.y, 0);
 	buffer->target_scroll_y = Clamp(buffer->target_scroll_y, 0, max_scroll);
-	// buffer->scroll_y = Lerp(
-	// 	buffer->scroll_y,
-	// 	buffer->target_scroll_y,
-	// 	1.0f - expf(-20.0f * delta_time())
-	// );
-	buffer->scroll_y = buffer->target_scroll_y;
+	buffer->scroll_y = Lerp(
+		buffer->scroll_y,
+		buffer->target_scroll_y,
+		1.0f - expf(-20.0f * delta_time())
+	);
+	// buffer->scroll_y = buffer->target_scroll_y;
 
 	// gutter
 
@@ -594,7 +598,7 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 				{rect.from.x + gutter_pad, y, digit_width * gutter_digits, line_h},
 				{},
 				THEME.gutter_foreground,
-				THEME.radius
+				5
 			);
 		}
 
