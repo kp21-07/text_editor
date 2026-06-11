@@ -1,133 +1,31 @@
 #include "editor.h"
 #include "config.h"
 
-funcdef string
-format_user_input(rune codepoint, Arena *frame_arena, Ed_Cmd *post)
-{
-	if (codepoint == '\n') {
-		Buffer *buf = ed_active();
-		u64 line_index = buffer_line_index_at(buf, buffer_cursor(buf));
-		Range_u64 range = buffer_line_range(buf, line_index);
-		range.end = Min(range.end, buffer_cursor(buf));
-		string line = buffer_slice(buf, frame_arena, range);
-
-		u64 i=0;
-		for (;i<line.len && is_space(line[i]); ++i)
-			;
-
-		rune before = buffer_char_at(ed_active(), buffer_cursor(ed_active()) - 1);
-		rune after = buffer_char_at(ed_active(), buffer_cursor(ed_active()));
-
-		string result = string_concat(frame_arena, S("\n"), line.range(0, i));
-
-		if (char_kind(before) == Char_Open) {
-			bool between_pair = (char_get_pair(before) == after);
-
-			if (!between_pair) {
-				result = string_concat(frame_arena, result, S("\t"));
-			}
-		}
-
-		return result;
-	}
-	else if(codepoint == '\t' || unicode_visual_rune(codepoint)) {
-		CharKind kind = char_kind(codepoint);
-		rune at_cursor = buffer_char_at(ed_active(), buffer_cursor(ed_active()));
-
-		if (kind == Char_Open) {
-			if (is_space(at_cursor) || 
-				char_kind(at_cursor) != Char_Open) {
-				rune pair = char_get_pair(codepoint);
-				*post = move_cursor(Direction::Left, 1);
-
-				string left = utf8_encode(codepoint, frame_arena);
-				string right = utf8_encode(pair, frame_arena);
-				return string_concat(frame_arena, left, right);
-			}
-		}
-		else if (kind == Char_Close || kind == Char_Quote) {
-			if (at_cursor == codepoint) {
-				*post = move_cursor(Direction::Right, 1);
-				return {};
-			}
-			if (kind == Char_Quote) {
-				rune pair = char_get_pair(codepoint);
-				*post = move_cursor(Direction::Left, 1);
-				string left = utf8_encode(codepoint, frame_arena);
-				string right = utf8_encode(pair, frame_arena);
-				return string_concat(frame_arena, left, right);
-			}
-		}
-
-		return utf8_encode(codepoint, frame_arena);
-	}
-	return {};
-}
-
-funcdef Ed_Cmd
-parse_command(slice<string> args)
-{
-	if (!args.len)
-		return {};
-	
-	string main_arg = args[0];
-
-	bool int_ok = false;
-	s64 i_val = string_to_int(main_arg, &int_ok);
-
-	if (int_ok && i_val >= 0) {
-		return jump_to_line((u64) i_val);
-	}
-
-	if (string_equal(main_arg, cmd_function(Cmd_Buffer_Open))) {
-		auto params = args.range(1, args.len);
-		if (params.len == 1) {
-			OS_FileData data = os_file_data(params[0]);
-			if (Flag_Check(data.flags, File_Directory))
-			{
-				return open_workspace(params[0]);
-			}
-		}
-		return open_buffer(params);
-	}
-	else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Close))) {
-		slice<string> paths = args.range(1, args.len);
-		if (paths.len == 0 && ed_active() != nullptr) {
-			paths = {
-				&ed_active()->path,
-				1
-			};
-			return close_buffer(paths);
-		}
-
-		return close_buffer(paths);
-	} else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Save))) {
-		Ed_Cmd cmd = save_buffer();
-		return cmd;
-	}
-
-	return {};
-}
+funcdef string format_user_input(rune codepoint, Ed_Cmd *post);
+funcdef Ed_Cmd parse_command (slice<string> args);
 
 void entry_point(slice<string> args)
 {
 	os_init();
 	defer(os_deinit());
-    
-	OS_Handle win = os_open_window(S("editor"))	;
-	defer(os_close_window(win));
 
 	ed_init();
 	defer(ed_deinit());
-    
-	gfx_init(win, persist_arena());
-	defer(gfx_deinit());
-    
-	ui_init(frame_arena());
 
-	while(!os_window_should_close(win)) {
+	ed_exec_command(open_buffer(args.range(1, args.len)));
+    
+	OS_Handle win = os_open_window(S("editor"));
+	defer(os_close_window(win));
+    
+	gfx_init(win, persist_arena(), frame_arena());
+	defer(gfx_deinit());
+
+	ui_init(persist_arena(), frame_arena());
+    
+	while(!os_window_should_close(win)) 
+	{
 		arena_free(frame_arena());
-        
+
 		OS_Input input = os_prepare_frame(win);
 		Ed_Mode curr_mode = ed_mode();
 
@@ -269,7 +167,7 @@ void entry_point(slice<string> args)
 
 				default: {
 					Ed_Cmd post = {};
-					string fmt = format_user_input(input.codepoint, frame_arena(), &post);
+					string fmt = format_user_input(input.codepoint, &post);
 					if (fmt.len) {
 						Ed_Cmd cmd = insert_string(fmt);
 						ed_exec_command(cmd);
@@ -278,160 +176,211 @@ void entry_point(slice<string> args)
 				} break;
 			}
 		}
-        
-		gfx_begin();
-		defer(gfx_submit());
-        
+
 		ivec2 win_size = os_window_size(win);
-		Rect win_rect = { {0, 0}, { (f32) win_size.x, (f32) win_size.y } };
-		gfx_set_viewport(win_size.x, win_size.y);
-        
-		gfx_push_clip(win_rect, frame_arena());
-		defer(gfx_pop_clip());
-        
-		UI_Config root = {};
-		root.layout = Layout_Col;
-		root.color = g_config.theme.background;
-		root.gap = 1.0f;
+		Quad window_rect = {
+			{ 0, 0 },
+			{ (f32) win_size.x, (f32) win_size.y }
+		};
 
-		ui_begin_frame(win_rect, root);
-	
-		UI_Box *panel = nullptr;
+		UI_Config frame = {};
+		frame.flags = UI_Invisible;
+		frame.padding = Pad((u16) THEME.radius);
 
-		UI_Config c_panel = {};
-		c_panel.flags = UI_Invisible;
-		c_panel.size.w = { Size_Fill, 1.0f };
-		c_panel.size.h = { Size_Fill, 1.0f };
-		c_panel.padding = Pad(5);
-		c_panel.gap = 1;
+		gfx_begin();
+		ui_begin_frame(window_rect, frame);
 
-		UI(c_panel) {
-			panel = __this_box__;
+		UI_Config panel = {};
+		UI_Box *panel_box = nullptr;
+		panel.size = { size_fill(1.0), size_fill(1.0) };
+		UI(panel) {
+			panel_box = __this_box__;
 		}
 
-		UI_Config c_status = {};
-		c_status.size.w = { Size_Fill, 1.0f };
-		c_status.size.h = { Size_Fixed, gfx_line_height() + 4};
-		c_status.padding = Pad(2);
-		c_status.gap = 2;
-		c_status.layout = Layout_Row;
-		c_status.color = g_config.theme.background_dim;
+		UI_Config status = {};
+		status.flags = UI_Clip_Children;
+		status.fill_color = THEME.background_dim;
+		status.border_color = THEME.border;
+		status.radius = THEME.radius;
+		status.size = { size_fill(1.0), size_fit() };
+		status.layout = Layout_Row;
+		status.padding = {4,8,4,4};
+		status.border = 1.0f;
 
-		UI(c_status) {
+		UI(status) {
+			UI_Config mode = {};
+			mode.fill_color = THEME.border;
+			mode.radius = THEME.radius - 2;
+			mode.size = { size_fit(), size_fill(1.0) };
+			mode.padding = Pad_XY((u16) THEME.radius, 0);
 
-			UI_Config container = {};
-			container.size.w = { Size_Fit, 0.0};
-			container.size.h = { Size_Fit, 0.0};
-			container.color = g_config.theme.gutter_foreground;
-			container.radius = gfx_line_height() * 0.2f;
-
-			UI(container) {
-				ui_text(
-					modal_string(ed_mode()),
-					g_config.theme.background,
-					Align_Start,
-					Size_Fixed
-				);
+			UI(mode) {
+				UI(label(modal_string(curr_mode), THEME.background));
 			}
 
-			string file_name = ed_active() ? ed_active()->path : S("- no file -");
-
-			string directory = ed_directory();
-
-			Buffer *buf = ed_active();
-
-			string right;
-			if (buf) {
-				right = buf->path;
+			string left_string = S("");
+			if (ed_active()) {
+				left_string = ed_active()->path;
 			} else {
-				right = ed_directory();
-			}
-
-			ui_text(
-				right,
-				g_config.theme.gutter_foreground,
-				Align_End,
-				Size_Fill
-			);
+				left_string = ed_directory();
+			} 
+			UI(label(left_string, THEME.foreground, Size_Fill, Align_End));
 		}
-        
+
 		ui_end_frame();
+
+		draw_buffer_view(ed_active(), panel_box->rect);
+
 		ui_draw();
 
-		draw_buffer_view(ed_active(), panel->rect);
-
-		UI_Box *box = nullptr;
 		if (ed_mode() == Ed_Mode::Command) {
+			frame.padding = Pad_XY(0, (u16) (win_size.y * 0.14f));
+			frame.layout = Layout_Row;
+			ui_begin_frame(window_rect, frame);
 
-			root.flags = UI_Invisible;
-			root.padding = Pad_XY(0, 100);
-			root.layout  = Layout_Row;
+			UI(gap({size_fill(1.0), size_fill(1.0)}));
 
-			ui_begin_frame(win_rect, root);
 
-			UI_Config pad = {
-				UI_Invisible,
-				{
-					{Size_Fill, 1.0f},
-					{Size_Fill, 1.0f}
-				}
-			};
-			pad.layout = Layout_Row;
+			UI_Config cmd_line = {};
+			cmd_line.flags = UI_Drop_Shadow | UI_Clip_Children;
+			cmd_line.size = { size_fill(1.0), size_fit() };
+			cmd_line.radius = 10.0f;
+			cmd_line.fill_color = THEME.background_dim;
+			cmd_line.border_color = THEME.border;
+			cmd_line.border = 1.0f;
+			cmd_line.padding = Pad(10);
+			cmd_line.layout = Layout_Row;
 
-			UI(pad);
-
-			UI_Config c_cmd = {};
-			c_cmd.flags = UI_Clip_Children;
-			c_cmd.size.w = { Size_Fill, 3.0f };
-			c_cmd.size.h = { Size_Fill, 1.0f };
-			c_cmd.padding = Pad(10);
-			c_cmd.radius = 10.0f;
-			c_cmd.border = 1.0f;
-			c_cmd.color = g_config.theme.background & 0xccffffff;
-			c_cmd.border_color = g_config.theme.border & 0xccffffff;
-
-			UI(c_cmd) {
-				pad.size.h = {Size_Fit};
-				box = __this_box__;
-
-				UI(pad) {
-					string cmd_string = ed_command_string();
-					u32 color = g_config.theme.foreground;
-
-					bool draw_cursor = true;
-
-					if (!cmd_string.len) {
-						color = g_config.theme.gutter_foreground;
-						cmd_string = S("Run Command..");
-						draw_cursor = false;
-					}
-
-					ui_text(cmd_string, color);
-
-					if (draw_cursor) {
-						UI_Config cursor = {
-							0,
-							{
-								{Size_Fixed, 2},
-								{Size_Fill, 1.0f}
-							}
-						};
-
-						cursor.color = g_config.theme.cursor;
-
-						UI(cursor);
-					}
-				}
+			UI(cmd_line) {
+				UI(label(ed_command_string(), THEME.gutter_foreground));
+				UI_Config cursor = {};
+				cursor.size = { size_fixed(3), size_fill(1) };
+				cursor.fill_color = THEME.gutter_foreground;
+				UI(cursor);
 			}
 
-			UI(pad);
+
+			UI(gap({size_fill(1.0), size_fill(1.0)}));
 
 			ui_end_frame();
-			
-			draw_dropshadow(box->rect.from, box->rect.size, 30, g_config.theme.background_dim);
-
 			ui_draw();
-
 		}
+
+		gfx_end();
 	}
+}
+
+
+funcdef string
+format_user_input(rune codepoint, Ed_Cmd *post)
+{
+	if (codepoint == '\n') {
+
+		Buffer *buf = ed_active();
+		u64 line_index = buffer_line_index_at(buf, buffer_cursor(buf));
+		Range_u64 range = buffer_line_range(buf, line_index);
+		range.end = Min(range.end, buffer_cursor(buf));
+
+		string line = buffer_slice(buf, frame_arena(), range);
+
+		u64 i = 0;
+		for (;i<line.len && is_space(line[i]); ++i)
+			;
+
+		rune before = buffer_char_at(ed_active(), buffer_cursor(ed_active()) - 1);
+		rune after = buffer_char_at(ed_active(), buffer_cursor(ed_active()));
+
+		string result = string_concat(frame_arena(), S("\n"), line.range(0, i));
+
+		if (char_kind(before) == Char_Open) {
+			bool between_pair = (char_get_pair(before) == after);
+
+			if (!between_pair) {
+				result = string_concat(frame_arena(), result, S("\t"));
+			}
+		}
+
+		return result;
+
+	}
+
+	else if(codepoint == '\t' || unicode_visual_rune(codepoint)) {
+		CharKind kind = char_kind(codepoint);
+		rune at_cursor = buffer_char_at(ed_active(), buffer_cursor(ed_active()));
+
+		if (kind == Char_Open) {
+			if (is_space(at_cursor) || 
+				char_kind(at_cursor) != Char_Open) {
+				rune pair = char_get_pair(codepoint);
+				*post = move_cursor(Direction::Left, 1);
+
+				string left = utf8_encode(codepoint, frame_arena());
+				string right = utf8_encode(pair, frame_arena());
+				return string_concat(frame_arena(), left, right);
+			}
+		}
+		else if (kind == Char_Close || kind == Char_Quote) {
+			if (at_cursor == codepoint) {
+				*post = move_cursor(Direction::Right, 1);
+				return {};
+			}
+			if (kind == Char_Quote) {
+				rune pair = char_get_pair(codepoint);
+				*post = move_cursor(Direction::Left, 1);
+				string left = utf8_encode(codepoint, frame_arena());
+				string right = utf8_encode(pair, frame_arena());
+				return string_concat(frame_arena(), left, right);
+			}
+		}
+
+		return utf8_encode(codepoint, frame_arena());
+	}
+
+	return {};
+}
+
+
+funcdef Ed_Cmd
+parse_command (slice<string> args)
+{
+	if (!args.len)
+		return {};
+	
+	string main_arg = args[0];
+
+	bool int_ok = false;
+	s64 i_val = string_to_int(main_arg, &int_ok);
+
+	if (int_ok && i_val >= 0) {
+		return jump_to_line((u64) i_val);
+	}
+
+	if (string_equal(main_arg, cmd_function(Cmd_Buffer_Open))) {
+		auto params = args.range(1, args.len);
+		if (params.len == 1) {
+			OS_FileData data = os_file_data(params[0]);
+			if (Flag_Check(data.flags, File_Directory))
+			{
+				return open_workspace(params[0]);
+			}
+		}
+		return open_buffer(params);
+	}
+	else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Close))) {
+		slice<string> paths = args.range(1, args.len);
+		if (paths.len == 0 && ed_active() != nullptr) {
+			paths = {
+				&ed_active()->path,
+				1
+			};
+			return close_buffer(paths);
+		}
+
+		return close_buffer(paths);
+	} else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Save))) {
+		Ed_Cmd cmd = save_buffer();
+		return cmd;
+	}
+
+	return {};
 }

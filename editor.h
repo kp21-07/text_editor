@@ -10,7 +10,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stddef.h>
-#include <math.h>
 #include <stdlib.h>
 
 typedef uint8_t  u8;
@@ -70,7 +69,7 @@ struct vec2 { f32 x, y; };
 struct ivec2 { s32 x, y; };
 struct vec4 { f32 x, y, z, w; };
 
-struct Rect {
+struct Quad {
 	vec2 from;
 	vec2 size;
 };
@@ -143,18 +142,15 @@ typedef u32 rune;
 #define Flag_Set(__flags, __mask) ((__flags) |= (__mask))
 #define Flag_Remove(__flags, __mask) ((__flags) &= ~(__mask))
 
-#define byteswap_u32(x) (((x & 0x000000FFu) << 24) | \
-                        ((x & 0x0000FF00u) <<  8) | \
-                        ((x & 0x00FF0000u) >>  8) | \
-                        ((x & 0xFF000000u) >> 24))
-
-#define Hex(x) byteswap_u32(x)
-
 template<typename T> funcdef list<T> list_make(slice<T> buf);
 template<typename T> funcdef void append(list<T> *l, T value);
 template<typename T> funcdef void append_slice(list<T> *l, slice<T> values);
 template<typename T> funcdef void insert_slice(list<T> *l, u64 index, slice<T> values);
 template<typename T> funcdef void clear(list<T> *l);
+
+
+funcdef u64 hash_string(string s);
+
 
 //////////////
 // ~gaureesh @NOTE: cursed `defer` construct for c++
@@ -368,41 +364,39 @@ funcdef bool   unicode_visual_rune(rune r);
 //////////////
 // ~gaureesh @NOTE: gfx
 
+#define color(x) vec4 {\
+	(((x) >> 24) & 0xFF) / 255.0f,\
+	(((x) >> 16) & 0xFF) / 255.0f,\
+	(((x) >> 8 ) & 0xFF) / 255.0f,\
+	(((x) >> 0 ) & 0xFF) / 255.0f,\
+}
+
 enum : u16 {
 	Texture_White,
 	Texture_Font,
 	Texture_Count
 };
 
-struct Render_Clip {
-	Rect rect;
-	Render_Clip *next;
-};
-
-funcdef void gfx_init(OS_Handle window, Arena *persist);
+funcdef void gfx_init(OS_Handle window, Arena *persist, Arena *frame);
 funcdef void gfx_deinit();
 
 funcdef void gfx_set_font_height(f32 height);
 funcdef f32  gfx_get_font_height();
 
 funcdef void gfx_begin();
-funcdef void gfx_submit();
+funcdef void gfx_end();
 
 funcdef void gfx_set_viewport(s32 width, s32 height);
 
-funcdef f32  delta_time();
-funcdef f32  gfx_line_height();
-funcdef f32  gfx_char_width(rune c);
-funcdef vec2 gfx_measure_text(string s);
+funcdef vec4 gfx_draw_text(string s, vec2 position, vec4 col, f32 max_width = -1.0f);
+funcdef vec2 gfx_measure_text(string s, f32 max_width = -1.0f);
+funcdef void gfx_draw_quad(vec4 dest, vec4 src, vec4 col, f32 radius = 0.0f, f32 blur = 0.0f, int tex_id = 0);
 
-funcdef void gfx_push_clip(Rect rect, Arena *frame_alloc);
-funcdef Render_Clip gfx_pop_clip();
+funcdef void gfx_push_clip(Quad rect);
+funcdef void gfx_pop_clip();
 
-funcdef void draw_quad(vec2 pos, vec2 size, u32 color, u8 texture = Texture_White, vec2 uv0 = {0.5f,0.5f}, vec2 uv1 = {0.5f,0.5f}, ivec2 circ0 = {0,0}, ivec2 circ1 = {0,0});
-funcdef void draw_dropshadow(vec2 pos, vec2 size, f32 thickness, u32 color = Hex(0x000000FF));
-funcdef vec2 draw_text(string s, vec2 start_pos, u32 color);
-funcdef void draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color);
-funcdef void draw_capsule(vec2 pos, vec2 size, u32 color);
+funcdef f32  line_height();
+funcdef f32  char_pixels(rune c);
 
 //////////////
 // ~gaureesh @NOTE: ui
@@ -418,6 +412,11 @@ struct UI_SizeAxis {
 	UI_SizeKind kind;
 	f32 value;
 };
+
+#define size_fixed(v) UI_SizeAxis { Size_Fixed, (f32)(v) }
+#define size_fit()    UI_SizeAxis { Size_Fit, 0.0f }
+#define size_fill(v)  UI_SizeAxis { Size_Fill, v }
+#define size_perc(v)  UI_SizeAxis { Size_Percent, v }
 
 struct UI_Size {
 	UI_SizeAxis w, h;
@@ -445,7 +444,10 @@ typedef u32 UI_Flags;
 enum UI_Flag : UI_Flags {
 	UI_Invisible     = 1 << 0,
 	UI_Clip_Children = 1 << 1,
+	UI_Drop_Shadow   = 1 << 2,
+	UI_Draw_Text     = 1 << 3,
 };
+
 
 struct UI_Config {
 	UI_Flags   flags;
@@ -455,9 +457,9 @@ struct UI_Config {
 	f32        radius;
 	f32        border;
 
-	u32        color;
-	u32        text_color;
-	u32        border_color;
+	vec4       fill_color;
+	vec4       text_color;
+	vec4       border_color;
 
 	string     text;
 
@@ -472,27 +474,25 @@ struct UI_Box {
 	UI_Box   *first;
 	UI_Box   *last;
 	UI_Config config;
-	Rect      rect;
+	Quad      rect;
 };
 
-funcdef void ui_init(Arena *frame_arena);
+funcdef void ui_init(Arena *persist, Arena *frame_arena);
 
 funcdef UI_Box *ui_open(UI_Config config);
+funcdef UI_Box *ui_open_key(UI_Config config);
 funcdef void    ui_close();
 
-funcdef void ui_begin_frame(Rect rect, UI_Config frame_config);
+funcdef void ui_begin_frame(Quad rect, UI_Config frame_config);
 funcdef void ui_end_frame();
 funcdef void ui_draw();
 
 #define UI(_cfg) for (UI_Box *__this_box__ = ui_open((_cfg)); __this_box__; ui_close(), __this_box__ = nullptr)
 
-// ~geb: components
+funcdef UI_Config gap(UI_Size size);
+funcdef UI_Config label(string s, vec4 color, UI_SizeKind x_size = Size_Fixed, UI_Align align = Align_Start);
 
-funcdef void ui_text(string text, u32 color, UI_Align alignment = Align_Start, UI_SizeKind x_kind = Size_Fixed );
-
-funcdef void ui_hr(u32 color, UI_SizeAxis size = { Size_Fill, 1.0f }, f32 thick = 1);
-
-//////////////
+////////////////////////
 // ~gaureesh @NOTE: buffer
 
 struct Line {
@@ -559,9 +559,9 @@ funcdef Buffer    *buffer_map_get(Buffer_Map *map, string path);
 funcdef bool       buffer_map_remove(Buffer_Map *map, string path);
 funcdef slice<string> buffer_map_get_paths(Buffer_Map *map, Arena *arena);
 
-funcdef void draw_buffer_view(Buffer *buffer, Rect rect);
+funcdef void draw_buffer_view(Buffer *buffer, Quad rect);
 
-//////////////
+////////////////////////
 // ~gaureesh @NOTE: editor
 
 enum class Ed_Mode {

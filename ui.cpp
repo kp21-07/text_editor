@@ -1,14 +1,24 @@
 #include "editor.h"
 
+const u64 MAX_KEY_BOXES = 4098;
+
 #define iterate_children(__p) for (UI_Box *child = __p->first; child; child = child->sibling)
+
+struct UI_State {
+	string key;
+	u64    frame;
+};
 
 global struct
 {
+	Arena *persist_arena;
 	Arena *frame_arena;
 	
 	UI_Box *root;
 	UI_Box *current;
 	u64     count;
+
+	slice<UI_State> storage;
 
 } ui_ctx;
 
@@ -26,9 +36,14 @@ ui__append_child(UI_Box *parent, UI_Box *child)
 }
 
 funcdef void
-ui_init(Arena *frame_arena)
+ui_init(Arena *persist, Arena *frame_arena)
 {
+	ui_ctx.persist_arena = persist;
 	ui_ctx.frame_arena = frame_arena;
+
+	slice<UI_State> state_storage = {};
+	state_storage = alloc_slice(persist, UI_State, MAX_KEY_BOXES);
+	ui_ctx.storage = state_storage;
 }
 
 funcdef UI_Box *
@@ -45,6 +60,23 @@ ui_open(UI_Config config)
 	ui_ctx.current = box;
 	ui_ctx.count += 1;
 	ui_ctx.current->config = config;
+
+	return box;
+}
+
+
+funcdef UI_Box *
+ui_open_key(UI_Config config, string key)
+{
+	UI_Box *box = ui_open(config);
+	u64 key_hash = hash_string(key);
+
+	auto table = ui_ctx.storage;
+	u64 capacity = table.len;
+	u64 index = key_hash % capacity;
+
+	for (u64 i=0; i<capacity; ++i) {
+	}
 
 	return box;
 }
@@ -105,7 +137,7 @@ ui_close()
 
 
 funcdef void
-ui_begin_frame(Rect rect, UI_Config frame_config)
+ui_begin_frame(Quad rect, UI_Config frame_config)
 {
 	UI_Box *root = ui_open({});
 	root->rect = rect;
@@ -247,86 +279,89 @@ ui_end_frame()
 funcdef void
 ui__draw_box(UI_Box *box)
 {
-	if (!box) return;
+	if (!box)
+		return;
 
-	UI_Config *cfg = &box->config;
+	const UI_Config config = box->config;
+	UI_Flags flags = config.flags;
 
-	if (!(cfg->flags & UI_Invisible))
+	if (flags & UI_Drop_Shadow)
 	{
-		if (cfg->color != 0 || cfg->border >= 1.0f)
-		{
-			if (cfg->border >= 1.0f)
-			{
-				f32  b         = cfg->border;
-				vec2 fg_pos    = { box->rect.from.x + b, box->rect.from.y + b };
-				vec2 fg_size   = { box->rect.size.x - 2*b, box->rect.size.y - 2*b };
-				f32  fg_radius = Max(0.0f, cfg->radius - b);
+		Quad rect = box->rect;
 
-				if (cfg->radius > 0.5f) {
-					draw_quad_rounded(box->rect.from, box->rect.size, cfg->radius,  cfg->border_color);
-					draw_quad_rounded(fg_pos,         fg_size,        fg_radius,    cfg->color);
-				} else {
-					draw_quad(box->rect.from, box->rect.size, cfg->border_color);
-					draw_quad(fg_pos,         fg_size,        cfg->color);
-				}
-			}
-			else
-			{
-				if (cfg->radius > 0.5f) {
-					draw_quad_rounded(box->rect.from, box->rect.size, cfg->radius, cfg->color);
-				} else {
-					draw_quad(box->rect.from, box->rect.size, cfg->color);
-				}
-			}
+		vec2 from = { rect.from.x - 20, rect.from.y - 20 };
+		vec2 size = { rect.size.x + 40, rect.size.y + 40 };
+
+		f32 net_radius = config.radius + 16;
+		gfx_draw_quad({from.x, from.y, size.x, size.y}, {}, color(0x00000044), net_radius, net_radius);
+	}
+
+	 if (!(flags & UI_Invisible)) 
+	 {
+		 f32 b          = config.border;
+		 vec2 fg_pos    = { box->rect.from.x + b, box->rect.from.y + b };
+		 vec2 fg_size   = { box->rect.size.x - 2*b, box->rect.size.y - 2*b };
+		 f32  fg_radius = Max(0.0f, config.radius - b);
+
+		 if (config.border >= 1.0f) {
+			 vec2 out_pos = box->rect.from;
+			 vec2 out_size = box->rect.size;
+			 gfx_draw_quad({out_pos.x, out_pos.y, out_size.x, out_size.y}, {}, config.border_color, config.radius);
+		 }
+		 gfx_draw_quad({fg_pos.x, fg_pos.y, fg_size.x, fg_size.y}, {}, config.fill_color, fg_radius);
+	 }
+
+	 Quad inner = {
+		 {
+			 box->rect.from.x + config.padding.left,
+			 box->rect.from.y + config.padding.top
+		 },
+		 {
+			 box->rect.size.x - config.padding.left - config.padding.right,
+			 box->rect.size.y - config.padding.top  - config.padding.bottom
+		 }
+	 };
+
+	if (flags & UI_Clip_Children) {
+		gfx_push_clip(inner);
+	}
+
+	if (flags & UI_Draw_Text)
+	{
+		vec2 text_size = gfx_measure_text(config.text);
+		vec2 text_pos  = {};
+
+		switch (config.align) {
+			case Align_Start: {
+				text_pos = {
+					inner.from.x,
+					inner.from.y + (inner.size.y - text_size.y) * 0.5f,
+				};
+			} break;
+			case Align_Center: {
+			    text_pos = {
+			 	   inner.from.x + (inner.size.x - text_size.x) * 0.5f,
+			 	   inner.from.y + (inner.size.y - text_size.y) * 0.5f,
+			    };
+			} break;
+			case Align_End: {
+				text_pos = {
+					inner.from.x + inner.size.x - text_size.x,
+					inner.from.y + (inner.size.y - text_size.y) * 0.5f,
+				};
+			} break;
 		}
 
-		if (cfg->flags & UI_Clip_Children)
-			gfx_push_clip(box->rect, ui_ctx.frame_arena);
-
-		if (cfg->text.len > 0) {
-			Rect inner = {
-				{ box->rect.from.x + cfg->padding.left, box->rect.from.y + cfg->padding.top },
-				{ box->rect.size.x - cfg->padding.left - cfg->padding.right,
-				  box->rect.size.y - cfg->padding.top  - cfg->padding.bottom }
-			};
-
-			vec2 text_size = gfx_measure_text(cfg->text);
-			vec2 text_pos  = {};
-
-			switch (cfg->align) {
-				case Align_Start: {
-					text_pos = {
-						inner.from.x,
-						inner.from.y + (inner.size.y - text_size.y) * 0.5f,
-					};
-				} break;
-				case Align_Center: {
-					text_pos = {
-						inner.from.x + (inner.size.x - text_size.x) * 0.5f,
-						inner.from.y + (inner.size.y - text_size.y) * 0.5f,
-					};
-				} break;
-				case Align_End: {
-					text_pos = {
-						inner.from.x + inner.size.x - text_size.x,
-						inner.from.y + (inner.size.y - text_size.y) * 0.5f,
-					};
-				} break;
-			}
-
-			draw_text(cfg->text, text_pos, cfg->text_color);
-		}
-	} else {
-		if (cfg->flags & UI_Clip_Children)
-			gfx_push_clip(box->rect, ui_ctx.frame_arena);
+		gfx_draw_text(config.text, text_pos, config.text_color); 
 	}
 
 	iterate_children(box) {
 		ui__draw_box(child);
 	}
 
-	if (cfg->flags & UI_Clip_Children)
+	if (flags & UI_Clip_Children) {
 		gfx_pop_clip();
+	}
 }
 
 funcdef void
@@ -346,46 +381,30 @@ ui_ctx_current()
 	return ui_ctx.current;
 }
 
-///////////////////////////////////
-// components
+///////////////////////////
 
-
-
-funcdef void
-ui_text(string text, u32 color, UI_Align alignment, UI_SizeKind x_kind)
+funcdef UI_Config
+gap(UI_Size size)
 {
-	vec2 size = gfx_measure_text(text);
-
-	UI_Config config = {};
-	config.flags |= UI_Clip_Children;
-	config.text = text;
-	config.text_color = color;
-	config.align = alignment;
-	if (x_kind == Size_Fixed) {
-		config.size = {
-			{Size_Fixed, size.x},
-			{Size_Fixed, size.y}
-		};
-	} else {
-		config.size = {
-			{Size_Fill, size.x},
-			{Size_Fixed, size.y}
-		};
-	}
-
-	UI(config);
+	UI_Config cfg = {};
+	cfg.flags = UI_Invisible;
+	cfg.size = size;
+	return cfg;
 }
 
-
-funcdef void
-ui_hr(u32 color, UI_SizeAxis size, f32 thick)
+funcdef UI_Config
+label(string s, vec4 color, UI_SizeKind x_kind, UI_Align align)
 {
-	UI_Config config = {};
-	config.color = color;
-	config.size = {
-		size,
-		{ Size_Fixed, thick }
+	UI_Config cfg = {};
+	cfg.flags = UI_Invisible | UI_Draw_Text | UI_Clip_Children;
+	cfg.text = s;
+	cfg.text_color = color;
+	cfg.align = align;
+
+	vec2 dims = gfx_measure_text(s);
+	cfg.size = {
+		x_kind == Size_Fixed ? size_fixed(dims.x) : size_fill(1.0),
+		size_fixed(Max(dims.y, line_height()))
 	};
-	UI(config);
+	return cfg;
 }
-

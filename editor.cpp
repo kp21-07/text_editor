@@ -1,10 +1,5 @@
 #include "editor.h"
 
-struct Panel {
-	string file;
-	Panel *first;
-	Panel *second;
-};
 
 global struct {
 	Arena *persist_arena;
@@ -19,9 +14,6 @@ global struct {
 
 	list<u8> cmd_string;
 	Buffer_Map buffer_map;
-
-	Panel *panel_root;
-	Panel *panel_free;
 } ed_ctx;
 
 
@@ -34,16 +26,14 @@ ed__init_workspace()
 	ed_ctx.working_dir = os_get_working_dir(ed_ctx.workspace_arena);
 	ed_ctx.buffer_map = buffer_map_make(ed_ctx.workspace_arena, 128);
 	ed_ctx.active_buffer = nullptr;
-	ed_ctx.panel_root = alloc_struct(ed_ctx.workspace_arena, Panel);
-	ed_ctx.panel_free = nullptr;
 }
 
 funcdef void
 ed_init()
 {
-	ed_ctx.persist_arena = arena_make(MB(4));
-	ed_ctx.frame_arena   = arena_make(MB(4));
-	ed_ctx.modal_arena   = arena_make(MB(4));
+	ed_ctx.persist_arena   = arena_make(MB(4));
+	ed_ctx.frame_arena     = arena_make(MB(4));
+	ed_ctx.modal_arena     = arena_make(MB(4));
 	ed_ctx.workspace_arena = arena_make(MB(4));
 
 	ed__init_workspace();

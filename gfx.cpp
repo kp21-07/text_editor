@@ -6,15 +6,16 @@
 #include "vendor/glad.h"
 #include "vendor/stb_truetype.h"
 
-#define ATLAS_SIZE   1024
-#define FIRST_CHAR   32
-#define NUM_CHARS    96
-#define MAX_VERTICES 4098
+const u64 MAX_QUADS  = 4098;
+const u64 ATLAS_SIZE = 512;
+const u64 FIRST_CHAR = 32;
+const u64 NUM_CHARS  = 96;
 
-#define MAX_U16 65535
-
-funcdef u32 gfx__compile_shader(int type, string src);
-funcdef Rect gfx__rect_intersect(Rect a, Rect b);
+funcdef void gfx__submit();
+funcdef void gfx__apply_clip(Quad rect, s32 win_h);
+funcdef Quad gfx__rect_intersect(Quad a, Quad b);
+funcdef u32  gfx__compile_shader(int type, string src);
+funcdef Quad gfx__rect_intersect(Quad a, Quad b);
 funcdef void gfx__rebuild_font_atlas(f32 pixel_height);
 
 enum {
@@ -23,26 +24,31 @@ enum {
 	Uniform_Count,
 };
 
-struct Vertex {
-	struct { s16 x, y; } pos;
-	struct { u16 u, v; } uv;   // normalized [0, MAX_U16] maps to [0.0, 1.0]
-	u32 color;
-	u16 tex_id;
-	struct { s8 x, y; } circle; 
-	struct { u16 x0, y0, x1, y1; } clip;
+struct Clip_Node {
+	Quad rect;
+	Clip_Node *next;
+};
+
+struct Quad_Instance {
+	vec4 dest;   // { position , size }
+	vec4 color;  // { r, g, b, a }
+	vec4 src;    // { uv0.x, uv0.y, uv1.x, uv1.y }
+	vec4 config; // { radius, tex_id, pad, pad }
 };
 
 static struct  {
 	Arena *persist;
+	Arena *frame_arena;
 
+	ivec2 resolution;
 	OS_TimeStamp last_frame_time;
 	f32 delta_time;
 
-	list<Vertex> vertices;
-	list<u16>    indices;
+	list<Quad_Instance> quads;
 
-	u32 vao, vbo, ebo;
-	u32 program;
+	// quad
+	GLuint quad_vao, quad_vbo, quad_ibo;
+	GLuint quad_program;
 
 	s32 uniforms[Uniform_Count];
 	u32 textures[Texture_Count];
@@ -52,11 +58,12 @@ static struct  {
 	f32 ascent, line_height;
 	f32 font_height;
 
-	Render_Clip *clip_stack;
+	Clip_Node *clip_stack;
 } gfx_ctx;
 
+
 funcdef void
-gfx_init(OS_Handle window, Arena *persist)
+gfx_init(OS_Handle window, Arena *persist, Arena *frame)
 {
 	if (!gladLoadGLLoader((GLADloadproc)os_get_gl_proc_address())) {
 		fprintf(stderr, "failed to load opengl");
@@ -67,97 +74,138 @@ gfx_init(OS_Handle window, Arena *persist)
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	
 	gfx_ctx.persist = persist;
+	gfx_ctx.frame_arena = frame;
+
+	gfx_ctx.quads = list_make(alloc_slice(persist, Quad_Instance, MAX_QUADS));
 
 	////////////// opengl renderer setup //////////////
+	
+	f32 quad_v[] = {
+		0.0f, 0.0f,
+		1.0f, 0.0f,
+		1.0f, 1.0f,
 
-	auto vertex_buf  = alloc_slice(persist, Vertex, MAX_VERTICES);
-	gfx_ctx.vertices = list_make(vertex_buf);
+		0.0f, 0.0f,
+		1.0f, 1.0f,
+		0.0f, 1.0f,
+	};
 
-	auto index_buf   = alloc_slice(persist, u16, MAX_VERTICES);
-	gfx_ctx.indices  = list_make(index_buf);
+	GLuint vao, vbo, ibo;
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
 
-	glGenVertexArrays(1, &gfx_ctx.vao);
-	glGenBuffers(1, &gfx_ctx.vbo);
-	glGenBuffers(1, &gfx_ctx.ebo);
-
-	glBindVertexArray(gfx_ctx.vao);
-
-	glBindBuffer(GL_ARRAY_BUFFER, gfx_ctx.vbo);
-	glBufferData(GL_ARRAY_BUFFER, MAX_VERTICES * sizeof(Vertex), nullptr, GL_DYNAMIC_DRAW);
-
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx_ctx.ebo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, MAX_VERTICES * sizeof(u16), nullptr, GL_DYNAMIC_DRAW);
+	glGenBuffers(1, &vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(
+		GL_ARRAY_BUFFER,
+		sizeof(quad_v),
+		quad_v,
+		GL_STATIC_DRAW
+	);
 
 	glEnableVertexAttribArray(0);
-	glVertexAttribPointer(0, 2, GL_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, pos));
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 2, 0);
+
+	glGenBuffers(1, &ibo);
+	glBindBuffer(GL_ARRAY_BUFFER, ibo);
+
+	glBufferData(GL_ARRAY_BUFFER, MAX_QUADS * sizeof(Quad_Instance), nullptr, GL_DYNAMIC_DRAW);
 
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(1, 2, GL_UNSIGNED_SHORT, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, uv));
+	glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Quad_Instance), (void*)offsetof(Quad_Instance,dest));
 
 	glEnableVertexAttribArray(2);
-	glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, color));
+	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Quad_Instance), (void*)offsetof(Quad_Instance,color));
 
 	glEnableVertexAttribArray(3);
-	glVertexAttribIPointer(3, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), (void *)offsetof(Vertex, tex_id));
+	glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Quad_Instance), (void*)offsetof(Quad_Instance,src));
 
 	glEnableVertexAttribArray(4);
-	glVertexAttribPointer(4, 2, GL_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, circle));
+	glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(Quad_Instance), (void*)offsetof(Quad_Instance,config));
 
-	glEnableVertexAttribArray(5);
-	glVertexAttribPointer(5, 4, GL_UNSIGNED_SHORT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, clip));
+	for (u64 i=1; i<=4; ++i) {
+		glVertexAttribDivisor(i, 1);
+	}
 
+	gfx_ctx.quad_vao = vao;
+	gfx_ctx.quad_vbo = vbo;
+	gfx_ctx.quad_ibo = ibo;
 
 	{
 		string vs = S(
 			"#version 330 core\n"
-			"layout (location = 0) in vec2  a_pos;"
-			"layout (location = 1) in vec2  a_uv;"
-			"layout (location = 2) in vec4  a_color;"
-			"layout (location = 3) in uint  a_texid;"
-			"layout (location = 4) in vec2  a_circ;"
-			"layout (location = 5) in vec4  a_clip;"
-			"out vec4       v_color;"
-			"out vec2       v_uv;"
-			"out vec2       v_pos;"
-			"out vec2       v_circ;"
-			"out vec4       v_clip;"
-			"flat out uint  v_texid;"
-			"uniform vec2   u_resolution;"
+
+			"layout (location = 0) in vec2 a_pos;"
+
+			"layout (location = 1) in vec4 a_dest;"
+			"layout (location = 2) in vec4 a_color;"
+			"layout (location = 3) in vec4 a_src;"
+			"layout (location = 4) in vec4 a_config;"
+
+			"uniform vec2 u_resolution;"
+
+			"out vec2 v_uv;"
+			"out vec2 v_local;"
+			"out vec2 v_size;"
+			"out vec4 v_color;"
+			"out vec4 v_config;"
+
 			"void main() {"
-			"   v_color  = a_color;"
-			"   v_uv     = a_uv;"
-			"   v_texid  = a_texid;"
-			"	v_pos    = a_pos;"
-			"	v_circ   = a_circ;"
-			"	v_clip   = a_clip;"
-			"   vec2 ndc = (a_pos / u_resolution) * 2.0 - 1.0;"
-			"   ndc.y    = -ndc.y;"
-			"   gl_Position = vec4(ndc, 0.0, 1.0);"
+				"vec2 world = a_dest.xy + a_pos * a_dest.zw;"
+				"vec2 ndc;"
+				"ndc.x = world.x / u_resolution.x * 2.0 - 1.0;"
+				"ndc.y = 1.0 - world.y / u_resolution.y * 2.0;"
+
+				"gl_Position = vec4(ndc, 0.0, 1.0);"
+
+				"v_uv = mix(a_src.xy, a_src.zw, a_pos);"
+				"v_local = a_pos;"
+				"v_size = a_dest.zw;"
+				"v_color = a_color;"
+				"v_config = a_config;"
 			"}"
 		);
 
 		string fs = S(
 			"#version 330 core\n"
-			"in vec4       v_color;"
-			"in vec2       v_uv;"
-			"in vec2       v_pos;"
-			"in vec2       v_circ;"
-			"in vec4       v_clip;"
-			"flat in uint  v_texid;"
-			"out vec4      Frag_Color;"
+
+			"in vec2 v_uv;"
+			"in vec2 v_local;"
+			"in vec2 v_size;"
+			"in vec4 v_color;"
+			"in vec4 v_config;"
+
+			"out vec4 out_color;"
+
 			"uniform sampler2D u_textures[2];"
+
+			"float rounded_box(vec2 p, vec2 half_size, float radius) {"
+				"vec2 q = abs(p) - (half_size - radius);"
+				"return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;"
+			"}"
+
 			"void main() {"
-			"   if (v_pos.x < v_clip.x || v_pos.y < v_clip.y ||"
-			"       v_pos.x > v_clip.z || v_pos.y > v_clip.w)"
-			"       discard;"
-			"   vec4 pixel;"
-			"   if (v_texid == 0u) { pixel = texture(u_textures[0], v_uv); }"
-			"   else               { pixel = texture(u_textures[1], v_uv); }"
-			"   float dist = length(v_circ);"
-			"   float aa = fwidth(dist);"
-			"   float mask = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, dist);"
-			"   Frag_Color = v_color * pixel;"
-			"   Frag_Color.a *= mask;"
+				"float radius = min(v_config.x, min(v_size.x, v_size.y) * 0.5);"
+				"float smoothness = max(v_config.z, 0.0);"
+
+				"vec2 p = (v_local - 0.5) * v_size;"
+
+				"float d = rounded_box(p, v_size * 0.5, radius);"
+
+				"float aa = fwidth(d);"
+				"float edge = aa + smoothness;"
+
+				"float alpha = 1.0f;"
+				"if (v_config.y < 0.5)"
+					"alpha = smoothstep(0, -edge, d);"
+
+				"vec4 pixel;"
+				"if (v_config.y == 0.0f)"
+					"pixel = texture(u_textures[0], v_uv);"
+				"else "
+					"pixel = texture(u_textures[1], v_uv);"
+
+				"out_color = vec4(v_color.rgb, v_color.a * alpha) * pixel;"
 			"}"
 		);
 
@@ -166,18 +214,18 @@ gfx_init(OS_Handle window, Arena *persist)
 
 		assert(vs_id && fs_id);
 
-		gfx_ctx.program = glCreateProgram();
-		glAttachShader(gfx_ctx.program, vs_id);
-		glAttachShader(gfx_ctx.program, fs_id);
-		glLinkProgram(gfx_ctx.program);
+		gfx_ctx.quad_program = glCreateProgram();
+		glAttachShader(gfx_ctx.quad_program, vs_id);
+		glAttachShader(gfx_ctx.quad_program, fs_id);
+		glLinkProgram(gfx_ctx.quad_program);
 
 		glDeleteShader(vs_id);
 		glDeleteShader(fs_id);
 
-		glUseProgram(gfx_ctx.program);
+		glUseProgram(gfx_ctx.quad_program);
 
-		gfx_ctx.uniforms[Uniform_Resolution] = glGetUniformLocation(gfx_ctx.program, "u_resolution");
-		gfx_ctx.uniforms[Uniform_Textures]   = glGetUniformLocation(gfx_ctx.program, "u_textures");
+		gfx_ctx.uniforms[Uniform_Resolution] = glGetUniformLocation(gfx_ctx.quad_program, "u_resolution");
+		gfx_ctx.uniforms[Uniform_Textures]   = glGetUniformLocation(gfx_ctx.quad_program, "u_textures");
 
 		int samplers[Texture_Count] = {0, 1};
 		glUniform1iv(gfx_ctx.uniforms[Uniform_Textures], Texture_Count, samplers);
@@ -248,10 +296,10 @@ gfx_get_font_height()
 funcdef void
 gfx_deinit()
 {
-	glDeleteVertexArrays(1, &gfx_ctx.vao);
-	glDeleteBuffers(1, &gfx_ctx.vbo);
-	glDeleteBuffers(1, &gfx_ctx.ebo);
-	glDeleteProgram(gfx_ctx.program);
+	glDeleteVertexArrays(1, &gfx_ctx.quad_vao);
+	glDeleteBuffers(1, &gfx_ctx.quad_vbo);
+	glDeleteBuffers(1, &gfx_ctx.quad_ibo);
+	glDeleteProgram(gfx_ctx.quad_program);
 	glDeleteTextures(Texture_Count, gfx_ctx.textures);
 }
 
@@ -264,221 +312,126 @@ gfx_begin()
 	).seconds;
 	gfx_ctx.last_frame_time = curr;
 
-	glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
+	vec4 cc = THEME.background;
+
+	glClearColor(cc.x, cc.y, cc.z, cc.w);
 	glClear(GL_COLOR_BUFFER_BIT);
+
+	ivec2 size = gfx_ctx.resolution;
+
+	Clip_Node *node = alloc_struct(gfx_ctx.frame_arena, Clip_Node);
+	s32 h = size.y;
+	Quad rect = {
+		{0, 0},
+		{(f32) size.x, (f32) size.y}
+	};
+
+	node->rect = rect;
+	node->next = gfx_ctx.clip_stack;
+	gfx_ctx.clip_stack = node;
+
+	gfx__submit();
+	gfx__apply_clip(rect, h);
 }
 
 funcdef void
-gfx_submit()
+gfx_end()
 {
-	glBindVertexArray(gfx_ctx.vao);
+	gfx_pop_clip();
+}
 
-	glBindBuffer(GL_ARRAY_BUFFER, gfx_ctx.vbo);
-	glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx_ctx.vertices.len * sizeof(Vertex)), gfx_ctx.vertices.raw);
+funcdef void
+gfx__submit()
+{
+	auto instances = gfx_ctx.quads;
+	if (!instances.len)
+		return;
 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gfx_ctx.ebo);
-	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)(gfx_ctx.indices.len * sizeof(u16)), gfx_ctx.indices.raw);
+	glBindBuffer(GL_ARRAY_BUFFER, gfx_ctx.quad_ibo);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, instances.len * sizeof(Quad_Instance), instances.raw);
 
-	glUseProgram(gfx_ctx.program);
-	glDrawElements(GL_TRIANGLES, (GLsizei)gfx_ctx.indices.len, GL_UNSIGNED_SHORT, 0);
+	glBindVertexArray(gfx_ctx.quad_vao);
+	glDrawArraysInstanced(GL_TRIANGLES, 0, 6, instances.len);
 
-	clear(&gfx_ctx.vertices);
-	clear(&gfx_ctx.indices);
+	clear(&gfx_ctx.quads);
 }
 
 
 funcdef void
 gfx_set_viewport(s32 width, s32 height)
 {
+	gfx_ctx.resolution = { width, height };
+
 	glViewport(0, 0, (int)width, (int)height);
-	glUseProgram(gfx_ctx.program);
+	glUseProgram(gfx_ctx.quad_program);
 	glUniform2f(gfx_ctx.uniforms[Uniform_Resolution], (float)width, (float)height);
 }
 
-funcdef f32 
-delta_time()
-{
-	return gfx_ctx.delta_time;
-}
-
-funcdef f32 
-gfx_line_height()
-{
-	return gfx_ctx.line_height;
-}
-
-inline bool
-rects_overlap(f32 ax, f32 ay, f32 aw, f32 ah, f32 bx, f32 by, f32 bw, f32 bh)
-{
-	return !(ax + aw <= bx || ay + ah <= by || ax >= bx + bw || ay >= by + bh);
-}
-
-
 funcdef void
-draw_quad(vec2 pos, vec2 size, u32 color, u8 texture, vec2 uv0, vec2 uv1, ivec2 circ0, ivec2 circ1)
+gfx_draw_quad(vec4 dest, vec4 src, vec4 color, f32 radius, f32 blur, int tex_id)
 {
-	if (gfx_ctx.vertices.len + 4 > gfx_ctx.vertices.capacity || gfx_ctx.indices.len + 6 > gfx_ctx.indices.capacity)
-	{
-		gfx_submit();
+	if (gfx_ctx.quads.len >= MAX_QUADS) {
+		gfx__submit();
 	}
 
-	s8 cr0_x = (s8) circ0.x;
-	s8 cr0_y = (s8) circ0.y;
-	s8 cr1_x = (s8) circ1.x;
-	s8 cr1_y = (s8) circ1.y;
+	Quad_Instance quad = {};
 
-	f32 x = pos.x,  y = pos.y;
-	f32 w = size.x, h = size.y;
+	quad.dest = dest;
+	quad.src  = src;
+	quad.color = color;
+	quad.config = { radius, (f32) tex_id, blur, 0 };
 
-	Rect clip = gfx_ctx.clip_stack->rect;
-
-	if (!rects_overlap(x, y, w, h, clip.from.x, clip.from.y, clip.size.x, clip.size.y))
-		return;
-
-	u16 i = (u16)(gfx_ctx.vertices.len);
-
-	u16 u0 = (u16)(uv0.x * MAX_U16);
-	u16 v0 = (u16)(uv0.y * MAX_U16);
-	u16 u1 = (u16)(uv1.x * MAX_U16);
-	u16 v1 = (u16)(uv1.y * MAX_U16);
-
-	u16 c0 = (u16)(clip.from.x);
-	u16 c1 = (u16)(clip.from.y);
-	u16 c2 = (u16)(clip.from.x + clip.size.x);
-	u16 c3 = (u16)(clip.from.y + clip.size.y);
-
-	Vertex v[] =  {
-		{ { (s16)x,       (s16)y }, { u0, v0 }, color, texture, {cr0_x, cr0_y}, { c0, c1, c2, c3 } },
-		{ { (s16)(x + w), (s16)y }, { u1, v0 }, color, texture, {cr1_x, cr0_y}, { c0, c1, c2, c3 } },
-		{ { (s16)(x + w), (s16)(y + h) }, { u1, v1 }, color, texture, {cr1_x, cr1_y}, { c0, c1, c2, c3 } },
-		{ { (s16)x,       (s16)(y + h) }, { u0, v1 }, color, texture, {cr0_x, cr1_y}, { c0, c1, c2, c3 } }
-	};
-	slice<Vertex> vertices = { v, 4 };
-	append_slice(&gfx_ctx.vertices, vertices);
-
-	u16 idx[] = {
-		(u16)(i + 0),
-		(u16)(i + 1),
-		(u16)(i + 2),
-		(u16)(i + 2),
-		(u16)(i + 3),
-		(u16)(i + 0),
-	};
-	slice<u16> indices = { idx, 6 };
-	append_slice(&gfx_ctx.indices, indices);
+	append(&gfx_ctx.quads, quad);
 }
 
 
-funcdef void
-draw_dropshadow(vec2 pos, vec2 size, f32 thickness, u32 color)
+funcdef vec4
+gfx_draw_text(string s, vec2 position, vec4 col, f32 max_width)
 {
-    if (gfx_ctx.vertices.len + 8 > gfx_ctx.vertices.capacity || gfx_ctx.indices.len + 24 > gfx_ctx.indices.capacity)
-        gfx_submit();
+	if (!s.len)
+		return {};
 
-	pos.x += thickness * 0.2f;
-	pos.y += thickness * 0.2f;
+    f32 x = position.x;
+    f32 y = position.y + gfx_ctx.ascent;
 
-	size.x -= thickness * 0.4f;
-	size.y -= thickness * 0.4f;
-
-    f32 r = thickness; // corner chamfer size
-
-    f32 ix0 = pos.x,          iy0 = pos.y;
-    f32 ix1 = pos.x + size.x, iy1 = pos.y + size.y;
-
-    f32 ox0 = ix0 - thickness, oy0 = iy0 - thickness;
-    f32 ox1 = ix1 + thickness, oy1 = iy1 + thickness;
-
-    u32 outer = color & 0x00FFFFFF;
-
-    Rect clip = gfx_ctx.clip_stack->rect;
-    u16 c0 = (u16)(clip.from.x);
-    u16 c1 = (u16)(clip.from.y);
-    u16 c2 = (u16)(clip.from.x + clip.size.x);
-    u16 c3 = (u16)(clip.from.y + clip.size.y);
-
-    u16 mid = (u16)(MAX_U16 * 0.5f);
-
-    // 8 outer vertices (chamfered corners)
-    // corners are inset by r along each axis
-    Vertex v[] = {
-        // outer ring — chamfered corners
-        { { (s16)(ox0 + r), (s16)(oy0)     }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 0 top-left-top
-        { { (s16)(ox1 - r), (s16)(oy0)     }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 1 top-right-top
-        { { (s16)(ox1),     (s16)(oy0 + r) }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 2 top-right-right
-        { { (s16)(ox1),     (s16)(oy1 - r) }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 3 bot-right-right
-        { { (s16)(ox1 - r), (s16)(oy1)     }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 4 bot-right-bot
-        { { (s16)(ox0 + r), (s16)(oy1)     }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 5 bot-left-bot
-        { { (s16)(ox0),     (s16)(oy1 - r) }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 6 bot-left-left
-        { { (s16)(ox0),     (s16)(oy0 + r) }, {mid,mid}, outer, 0, {}, {c0,c1,c2,c3} }, // 7 top-left-left
-
-        // inner ring — plain rectangle corners
-        { { (s16)(ix0), (s16)(iy0) }, {mid,mid}, color, 0, {}, {c0,c1,c2,c3} }, // 8  TL
-        { { (s16)(ix1), (s16)(iy0) }, {mid,mid}, color, 0, {}, {c0,c1,c2,c3} }, // 9  TR
-        { { (s16)(ix1), (s16)(iy1) }, {mid,mid}, color, 0, {}, {c0,c1,c2,c3} }, // 10 BR
-        { { (s16)(ix0), (s16)(iy1) }, {mid,mid}, color, 0, {}, {c0,c1,c2,c3} }, // 11 BL
-    };
-
-    u16 i = (u16)gfx_ctx.vertices.len;
-
-	u16 idx[] = {
-		// top edge
-		(u16)(i+0), (u16)(i+9), (u16)(i+1),
-		(u16)(i+0), (u16)(i+8), (u16)(i+9),
-		// top-right corner
-		(u16)(i+1), (u16)(i+9), (u16)(i+2),
-		// right edge
-		(u16)(i+2), (u16)(i+9), (u16)(i+10),
-		(u16)(i+2), (u16)(i+10),(u16)(i+3),
-		// bot-right corner
-		(u16)(i+3), (u16)(i+10),(u16)(i+4),
-		// bottom edge
-		(u16)(i+5), (u16)(i+4), (u16)(i+10),
-		(u16)(i+5), (u16)(i+10),(u16)(i+11),
-		// bot-left corner
-		(u16)(i+6), (u16)(i+5), (u16)(i+11),
-		// left edge
-		(u16)(i+6), (u16)(i+11),(u16)(i+8),
-		(u16)(i+6), (u16)(i+8), (u16)(i+7),
-		// top-left corner
-		(u16)(i+7), (u16)(i+8), (u16)(i+0),
-	};
-
-    append_slice(&gfx_ctx.vertices, (slice<Vertex>){ v, 12 });
-    append_slice(&gfx_ctx.indices,  (slice<u16>)   { idx, 36 });
-}
-
-funcdef vec2
-draw_text(string s, vec2 start_pos, u32 color)
-{
-    f32 x = start_pos.x;
-    f32 y = start_pos.y + gfx_ctx.ascent;
-
-    f32 max_x = start_pos.x;
-    f32 lines = 1;
-
+    f32 max_x = x;
+    u64 lines = 0;
     u64 column = 0;
 
-    int width = 0;
-    for (int i = 0; i < (int)s.len; i += width) {
-        rune c = utf8_decode(s.range(i, s.len), &width);
+    for (u64 i = 0; i < s.len;)
+    {
+        int advance = 0;
+        rune c = utf8_decode(s.range(i, s.len), &advance);
 
-        if (c == '\n') {
-            if (x > max_x) max_x = x;
+        if (advance <= 0)
+            break;
 
-            x = start_pos.x;
-            y += gfx_line_height();
+        i += advance;
+
+        if (c == '\r')
+            continue;
+
+        if (c == '\n')
+        {
+            if (x > max_x)
+                max_x = x;
+
+            x = position.x;
+            y += gfx_ctx.line_height;
 
             column = 0;
             lines += 1;
             continue;
         }
 
-        if (c == '\t') {
+        if (c == '\t')
+        {
             u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
 
-            for (u64 t = 0; t < spaces; ++t) {
+            for (u64 t = 0; t < spaces; ++t)
+            {
                 stbtt_aligned_quad q;
+
                 stbtt_GetBakedQuad(
                     gfx_ctx.baked_chars,
                     ATLAS_SIZE,
@@ -493,96 +446,221 @@ draw_text(string s, vec2 start_pos, u32 color)
 
             column += spaces;
 
-            if (x > max_x) max_x = x;
+            if (x > max_x)
+                max_x = x;
+
             continue;
         }
 
         bool invalid = false;
+
         if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS) {
             c = '?';
             invalid = true;
         }
 
-        if (c == '\r') {
-            continue;
-        }
+        f32 test_x = x;
+        f32 test_y = y;
 
         stbtt_aligned_quad q;
+
         stbtt_GetBakedQuad(
             gfx_ctx.baked_chars,
             ATLAS_SIZE,
             ATLAS_SIZE,
             (int)(c - FIRST_CHAR),
-            &x,
-            &y,
+            &test_x,
+            &test_y,
             &q,
             1
         );
 
+        if (max_width > 0.0f && x > position.x && (q.x1 - position.x) > max_width) {
+            x = position.x;
+            y += gfx_ctx.line_height;
+
+            lines += 1;
+            column = 0;
+
+            test_x = x;
+            test_y = y;
+
+            stbtt_GetBakedQuad(
+                gfx_ctx.baked_chars,
+                ATLAS_SIZE,
+                ATLAS_SIZE,
+                (int)(c - FIRST_CHAR),
+                &test_x,
+                &test_y,
+                &q,
+                1
+            );
+        }
+
+        x = test_x;
+        y = test_y;
+
         if (c != ' ') {
-            draw_quad(
-                { q.x0, q.y0 },
-                { q.x1 - q.x0, q.y1 - q.y0 },
-                invalid ? g_config.theme.error : color,
-                Texture_Font,
-                { q.s0, q.t0 },
-                { q.s1, q.t1 },
-                {0,0},
-                {0,0}
+            gfx_draw_quad(
+                { q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0 },
+                { q.s0, q.t0, q.s1, q.t1 },
+                invalid ? color(0x00ff00ff) : col,
+                0.0f,
+                0.0f,
+                1
             );
         }
 
         column += 1;
 
-        if (x > max_x) max_x = x;
+        if (x > max_x)
+            max_x = x;
     }
 
+	if (s[s.len - 1] != '\n')
+		lines += 1;
+
     return {
-        max_x - start_pos.x,
-        lines * gfx_line_height()
+        position.x,
+        position.y,
+        max_x - position.x,
+        lines * gfx_ctx.line_height
     };
 }
 
-funcdef void
-draw_quad_rounded(vec2 pos, vec2 size, f32 radius, u32 color)
+funcdef vec2
+gfx_measure_text(string s, f32 max_width)
 {
-	if (radius <= 0.5f)
-	{
-		draw_quad(pos, size, color);
-		return;
-	}
+    if (!s.len)
+        return {};
 
-	radius = Min(radius, Min(size.x, size.y) * 0.5f);
+    f32 x = 0.0f;
+    f32 max_x = 0.0f;
 
-	draw_quad({pos.x, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {127, 127}, {0, 0});
-	draw_quad({pos.x + size.x - radius, pos.y}, {radius, radius}, color, Texture_White, {}, {}, {0, 127}, {127, 0});
-	draw_quad({pos.x + size.x - radius, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {0, 0}, {127, 127});
-	draw_quad({pos.x, pos.y + size.y - radius}, {radius, radius}, color, Texture_White, {}, {}, {127, 0}, {0, 127});
+    u64 lines = 0;
+    u64 column = 0;
 
-	draw_quad({pos.x + radius, pos.y}, {size.x - radius * 2, size.y}, color);
-	draw_quad({pos.x, pos.y + radius}, {radius, size.y - radius * 2}, color);
-	draw_quad({pos.x + size.x - radius, pos.y + radius}, {radius, size.y - radius * 2}, color);
+    for (u64 i = 0; i < s.len;)
+    {
+        int advance = 0;
+        rune c = utf8_decode(s.range(i, s.len), &advance);
+
+        if (advance <= 0)
+            break;
+
+        i += advance;
+
+        if (c == '\r')
+            continue;
+
+        if (c == '\n')
+        {
+            if (x > max_x)
+                max_x = x;
+
+            x = 0.0f;
+            column = 0;
+            lines += 1;
+            continue;
+        }
+
+        if (c == '\t')
+        {
+            u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
+
+            stbtt_bakedchar *space =
+                &gfx_ctx.baked_chars[' ' - FIRST_CHAR];
+
+            x += space->xadvance * spaces;
+
+            column += spaces;
+
+            if (x > max_x)
+                max_x = x;
+
+            continue;
+        }
+
+        if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS)
+            c = '?';
+
+        stbtt_bakedchar *bc =
+            &gfx_ctx.baked_chars[c - FIRST_CHAR];
+
+        f32 next_x = x + bc->xadvance;
+
+        if (max_width > 0.0f &&
+            x > 0.0f &&
+            next_x > max_width)
+        {
+            x = 0.0f;
+
+            lines += 1;
+            column = 0;
+
+            next_x = bc->xadvance;
+        }
+
+        x = next_x;
+
+        column += 1;
+
+        if (x > max_x)
+            max_x = x;
+    }
+
+    if (s[s.len - 1] != '\n')
+        lines += 1;
+
+    return {
+        max_x,
+        lines * gfx_ctx.line_height
+    };
+}
+
+
+funcdef void
+gfx_push_clip(Quad rect)
+{
+	Clip_Node *node = alloc_struct(gfx_ctx.frame_arena, Clip_Node);
+
+	s32 h = gfx_ctx.resolution.y;
+	rect = gfx__rect_intersect(
+		gfx_ctx.clip_stack->rect,
+		rect
+	);
+
+	node->rect = rect;
+	node->next = gfx_ctx.clip_stack;
+	gfx_ctx.clip_stack = node;
+
+	gfx__submit();
+	gfx__apply_clip(rect, h);
 }
 
 funcdef void
-draw_capsule(vec2 pos, vec2 size, u32 color)
+gfx_pop_clip()
 {
-	f32 radius = Min(size.x, size.y) * 0.5f;
+	assert(gfx_ctx.clip_stack);
+    gfx__submit();
 
-	if (size.x >= size.y) {
-		draw_quad({pos.x, pos.y}, {radius, size.y}, color, 0, {}, {}, {-128, -128}, {0, 127});
-		draw_quad({pos.x + radius, pos.y}, {size.x - size.y, size.y}, color);
-		draw_quad({pos.x + size.x - radius, pos.y}, {radius, size.y}, color, 0, {}, {}, {0, 127}, {127, -128});
-	}
-	else {
-		draw_quad({pos.x, pos.y}, {size.x, radius}, color, 0, {}, {}, {-128, -128}, {127, 0});
-		draw_quad({pos.x, pos.y + radius}, {size.x, size.y - size.x}, color);
-		draw_quad({pos.x, pos.y + size.y - radius}, {size.x, radius}, color, 0, {}, {}, {127, 0}, {-128, -128});
-	}
+    gfx_ctx.clip_stack = gfx_ctx.clip_stack->next;
+
+    if (gfx_ctx.clip_stack) {
+        gfx__apply_clip(gfx_ctx.clip_stack->rect, gfx_ctx.resolution.y);
+    } else {
+        glDisable(GL_SCISSOR_TEST);
+    }
+}
+
+funcdef f32 
+line_height()
+{
+	return gfx_ctx.line_height;
 }
 
 funcdef f32
-gfx_char_width(rune c)
+char_pixels(rune c)
 {
     if (c < FIRST_CHAR || c >= FIRST_CHAR + NUM_CHARS) c = NUM_CHARS + FIRST_CHAR - 1;
     f32 x = 0, y = 0;
@@ -590,92 +668,6 @@ gfx_char_width(rune c)
     stbtt_GetBakedQuad(gfx_ctx.baked_chars, ATLAS_SIZE, ATLAS_SIZE, (int)(c - FIRST_CHAR), &x, &y, &q, 1);
     return x;
 }
-
-funcdef vec2
-gfx_measure_text(string s)
-{
-	f32 x = 0;
-	f32 max_x = 0;
-
-	f32 lines = 1;
-
-	u64 column = 0;
-
-	int width = 0;
-
-	for (int i = 0; i < (int)s.len; i += width) {
-		rune c = utf8_decode(
-			s.range(i, s.len),
-			&width
-		);
-
-		if (c == '\n') {
-			if (x > max_x) {
-				max_x = x;
-			}
-
-			x = 0;
-			column = 0;
-
-			lines += 1;
-			continue;
-		}
-
-		if (c == '\r') {
-			continue;
-		}
-
-		if (c == '\t') {
-			u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
-
-			x += gfx_char_width(' ') * spaces;
-			column += spaces;
-
-			if (x > max_x) {
-				max_x = x;
-			}
-
-			continue;
-		}
-
-		x += gfx_char_width(c);
-		column += 1;
-
-		if (x > max_x) {
-			max_x = x;
-		}
-	}
-
-	return {
-		max_x,
-		lines * gfx_line_height()
-	};
-}
-
-funcdef void
-gfx_push_clip(Rect rect, Arena *frame_alloc)
-{
-	if (gfx_ctx.clip_stack) {
-		rect = gfx__rect_intersect(rect, gfx_ctx.clip_stack->rect);
-	}
-
-	Render_Clip *clip = alloc_struct(frame_alloc, Render_Clip);
-	clip->rect = rect;
-	clip->next = gfx_ctx.clip_stack;
-
-	gfx_ctx.clip_stack = clip;
-}
-
-funcdef Render_Clip
-gfx_pop_clip()
-{
-	Render_Clip clip = {};
-	clip.rect = gfx_ctx.clip_stack->rect;
-
-	gfx_ctx.clip_stack = gfx_ctx.clip_stack->next;
-	return clip;
-}
-
 
 funcdef u32
 gfx__compile_shader(int type, string src)
@@ -700,27 +692,6 @@ gfx__compile_shader(int type, string src)
 
 	return id;
 }
-
-funcdef Rect
-gfx__rect_intersect(Rect a, Rect b)
-{
-	Rect result = {};
-
-	f32 x0 = Max(a.from.x, b.from.x);
-	f32 y0 = Max(a.from.y, b.from.y);
-
-	f32 x1 = Min(a.from.x + a.size.x, b.from.x + b.size.x);
-	f32 y1 = Min(a.from.y + a.size.y, b.from.y + b.size.y);
-
-	result.from.x = x0;
-	result.from.y = y0;
-
-	result.size.x = Max(0.0f, x1 - x0);
-	result.size.y = Max(0.0f, y1 - y0);
-
-	return result;
-}
-
 
 funcdef void
 gfx__rebuild_font_atlas(f32 pixel_height)
@@ -781,4 +752,36 @@ gfx__rebuild_font_atlas(f32 pixel_height)
 		GL_UNSIGNED_BYTE,
 		bitmap.raw
 	);
+}
+
+funcdef Quad
+gfx__rect_intersect(Quad a, Quad b)
+{
+    f32 x0 = Max(a.from.x, b.from.x);
+    f32 y0 = Max(a.from.y, b.from.y);
+
+    f32 x1 = Min(a.from.x + a.size.x, b.from.x + b.size.x);
+    f32 y1 = Min(a.from.y + a.size.y, b.from.y + b.size.y);
+
+    if (x1 < x0) x1 = x0;
+    if (y1 < y0) y1 = y0;
+
+    return {
+        x0,
+        y0,
+        x1 - x0,
+        y1 - y0
+    };
+}
+
+funcdef void
+gfx__apply_clip(Quad rect, s32 win_h)
+{
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(
+        (int)rect.from.x,
+        (int)(win_h - (rect.from.y + rect.size.y)),
+        (int)rect.size.x,
+        (int)rect.size.y
+    );
 }

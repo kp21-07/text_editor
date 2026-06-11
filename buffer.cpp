@@ -1,6 +1,8 @@
 #include "editor.h"
 #include "config.h"
 
+#include <math.h>
+
 funcdef void
 buffer__build_lines(Buffer *buffer)
 {
@@ -496,11 +498,9 @@ buffer_map_get_paths(Buffer_Map *map, Arena *arena)
 
 
 funcdef void
-draw_buffer_view(Buffer *buffer, Rect rect)
+draw_buffer_view(Buffer *buffer, Quad rect)
 {
-	Theme g_color = g_config.theme;
-
-	gfx_push_clip(rect, frame_arena());
+	gfx_push_clip(rect);
 	defer(gfx_pop_clip());
 
 	if (!buffer) {
@@ -508,14 +508,13 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 
 		f32 x = rect.from.x + (rect.size.x - dim.x) * 0.5f;
 		f32 y = rect.from.y + (rect.size.y - dim.y) * 0.5f;
-
-		draw_text(S(" no file "), {x, y}, g_color.error);
+		gfx_draw_text(S(" no file "), {x, y}, THEME.error);
 		return;
 	}
 
-	f32 line_height = gfx_line_height();
-	f32 digit_width = gfx_char_width('0');
-	f32 space_width = gfx_char_width(' ');
+	f32 line_h = line_height();
+	f32 digit_width = char_pixels('0');
+	f32 space_width = char_pixels(' ');
 
 	string buf_string = buffer->data.view();
 	auto lines = buffer->lines.view();
@@ -525,25 +524,25 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 
 	// scrolling
 
-	f32 cursor_y = cursor_line * line_height;
-	f32 margin = 5 * line_height;
+	f32 cursor_y = cursor_line * line_h;
+	f32 margin = 5 * line_h;
 
 	if (cursor_y < buffer->target_scroll_y + margin) {
 		buffer->target_scroll_y = cursor_y - margin;
 	}
 
-	if (cursor_y + line_height > buffer->target_scroll_y + rect.size.y - margin) {
-		buffer->target_scroll_y = cursor_y + line_height + margin - rect.size.y;
+	if (cursor_y + line_h > buffer->target_scroll_y + rect.size.y - margin) {
+		buffer->target_scroll_y = cursor_y + line_h + margin - rect.size.y;
 	}
 
-	f32 max_scroll = Max(lines.len * line_height - rect.size.y, 0);
+	f32 max_scroll = Max(lines.len * line_h - rect.size.y, 0);
 	buffer->target_scroll_y = Clamp(buffer->target_scroll_y, 0, max_scroll);
-	buffer->scroll_y = Lerp(
-		buffer->scroll_y,
-		buffer->target_scroll_y,
-		1.0f - expf(-20.0f * delta_time())
-	);
-	// buffer->scroll_y = buffer->target_scroll_y;
+	// buffer->scroll_y = Lerp(
+	// 	buffer->scroll_y,
+	// 	buffer->target_scroll_y,
+	// 	1.0f - expf(-20.0f * delta_time())
+	// );
+	buffer->scroll_y = buffer->target_scroll_y;
 
 	// gutter
 
@@ -556,8 +555,8 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 
 	// visible lines
 
-	u64 first_visible_line = (u64)(buffer->scroll_y / line_height);
-	f32 y = rect.from.y - fmodf(buffer->scroll_y, line_height);
+	u64 first_visible_line = (u64)(buffer->scroll_y / line_h);
+	f32 y = rect.from.y - fmodf(buffer->scroll_y, line_h);
 
 	// draw lines
 
@@ -575,11 +574,11 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 		bool current_line = (i == cursor_line);
 
 		if (current_line) {
-			draw_quad_rounded(
-				{text_x, y},
-				{rect.size.x - gutter_width - 2, line_height},
-				5,
-				g_color.background_dim
+			gfx_draw_quad(
+				{text_x, y, rect.size.x - gutter_width - 2, line_h},
+				{},
+				THEME.background_dim,
+				THEME.radius
 			);
 		}
 
@@ -591,21 +590,22 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 		);
 
 		if (current_line) {
-			draw_quad_rounded(
-				{rect.from.x + gutter_pad, y},
-				{digit_width * gutter_digits, line_height},
-				5,
-				g_color.gutter_foreground
+			gfx_draw_quad(
+				{rect.from.x + gutter_pad, y, digit_width * gutter_digits, line_h},
+				{},
+				THEME.gutter_foreground,
+				THEME.radius
 			);
 		}
 
-		draw_text(
+		gfx_draw_text(
 			line_number,
 			{rect.from.x + gutter_pad, y},
-			current_line ? g_color.background : g_color.gutter_foreground
+			current_line ? THEME.background : THEME.gutter_foreground
 		);
 
-		vec2 size = draw_text(line, {text_x, y}, g_color.foreground);
+		vec4 rect = gfx_draw_text(line, {text_x, y}, THEME.foreground);
+		vec2 size = { rect.z, rect.w };
 
 		if (current_line && ed_mode() != Ed_Mode::Command) {
 			u64 cursor_offset = buffer->cursor - cursor_range.begin;
@@ -617,7 +617,7 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 			vec2 cursor_pos = {cursor_x, y};
 
 			if (ed_mode() != Ed_Mode::Insert) {
-				draw_capsule(cursor_pos, {space_width, line_height}, g_color.cursor);
+				gfx_draw_quad({cursor_pos.x, cursor_pos.y, space_width, line_h}, {}, THEME.cursor, 9999.9f);
 
 				if (cursor_offset < line.len) {
 					s32 width = 0;
@@ -626,14 +626,13 @@ draw_buffer_view(Buffer *buffer, Rect rect)
 
 					string cursor_char = line.range(cursor_offset, cursor_offset + width);
 
-					draw_text(cursor_char, cursor_pos, g_color.cursor_text);
+					gfx_draw_text(cursor_char, cursor_pos, THEME.cursor_text);
 				}
 			} else {
-				draw_quad(cursor_pos, {2, line_height}, g_color.cursor);
+				gfx_draw_quad({cursor_pos.x, cursor_pos.y, 2, line_h}, {}, THEME.cursor, 9999.9f);
 			}
 		}
 
-		// y += line_height;
-		y += size.y;
+		y += Max(size.y, line_h);
 	}
 }

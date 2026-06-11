@@ -80,3 +80,20 @@ list_realloc(list<T> *list, u64 new_cap, Arena *arena) {
 	list->raw = new_data.raw;
 	list->capacity = new_data.len;
 }
+
+
+funcdef u64
+hash_string(string s)
+{
+    u64 h = 14695981039346656037ULL; 
+
+    const u8 *p = (const u8 *)s.raw;
+
+    for (size_t i = 0; i < s.len; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+
+    return h;
+}
+

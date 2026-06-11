@@ -59,7 +59,7 @@ os_open_window(string title)
 
 	RGFW_window_makeCurrentContext_OpenGL(win);
 	RGFW_window_swapInterval_OpenGL(win, 0);
-	RGFW_window_setMinSize(win, 200, 200);
+	// RGFW_window_setMinSize(win, 200, 200);
 
 	OS_Handle window_handle = {
 		(uintptr_t) win
