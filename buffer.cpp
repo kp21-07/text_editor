@@ -207,12 +207,12 @@ buffer_insert(Buffer *buffer, string s)
 funcdef void
 buffer_delete(Buffer *buffer, u64 count, Direction direction)
 {
-    if (!buffer) return;
+	if (!buffer) return;
 
-    auto buf = buffer->data.view();
+	auto buf = buffer->data.view();
 
-    if (count == 0 || buf.len == 0)
-        return;
+	if (count == 0 || buf.len == 0)
+		return;
 
     u64 start = buffer->cursor;
     u64 end   = buffer->cursor;
@@ -231,15 +231,15 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
         buffer->cursor = start;
     }
 
-    if (start == end)
-        return;
+	if (start == end)
+		return;
 
 	u8 *mem = (u8 *) buf.raw;
-    memmove(mem + start, mem + end, buf.len - end);
+	memmove(mem + start, mem + end, buf.len - end);
 	buffer->data.len -= (end - start);
 
-    buffer__build_lines(buffer, start);
-    buffer__sync_desired_column(buffer);
+	buffer__build_lines(buffer, start);
+	buffer__sync_desired_column(buffer);
 	Flag_Set(buffer->flags, Buffer_Dirty);
 }
 

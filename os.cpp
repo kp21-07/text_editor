@@ -94,6 +94,7 @@ os_prepare_frame(OS_Handle window)
 	RGFW_waitForEvent(-1);
 	while (RGFW_window_checkEvent(win, &event)) {
 		switch (event.type) {
+			case RGFW_windowRefresh:
 			case RGFW_windowResized: {
 				gfx_set_viewport(win->w, win->h);
 				break;

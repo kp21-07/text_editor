@@ -47,7 +47,7 @@ void entry_point(slice<string> args)
 
 				case 'J': cmd = move_cursor(Direction::Down, 10); break;
 				case 'K': cmd = move_cursor(Direction::Up, 10); break;
-
+				
 				case 'G': {
 					Buffer *active = ed_active();
 					u64 line_idx = buffer_line_count(active);
@@ -166,7 +166,7 @@ void entry_point(slice<string> args)
 
 					cmd = change_mode(Ed_Mode::Normal);
 					ed_exec_command(cmd);
-				}
+				} break;
 
 				default: {
 					if (!unicode_visual_rune(input.codepoint))
@@ -223,6 +223,11 @@ void entry_point(slice<string> args)
 			case Ed_Mode::Buffer_Search : layout_buffer_search_ui(window_rect); break;
 			default : break;
 		}
+
+
+		static u64 tick = 0;
+		gfx_draw_text(string_format(frame_arena(), "%d", (int) tick), {0,0}, THEME.error);
+		tick += 1;
 
 		gfx_end();
 	}
@@ -398,7 +403,6 @@ layout_editor_ui(Quad window)
 			UI(fit_container(THEME.gutter_foreground, Pad_XY(4, 0), THEME.radius - 4))
 				UI(label(ed_directory(), THEME.background));
 		} 
-
 	}
 	ui_end_frame();
 	
@@ -466,7 +470,7 @@ layout_buffer_search_ui(Quad window)
 
 	UI_Config search_panel = {};
 	search_panel.flags = UI_Drop_Shadow | UI_Clip_Children;
-	search_panel.size = { size_fill(1.0), size_fill() };
+	search_panel.size = { size_fill(1.0), size_fill(1.0) };
 	search_panel.radius = 10.0f;
 	search_panel.fill_color = THEME.background_dim;
 	search_panel.border_color = THEME.border;
