@@ -33,7 +33,7 @@ WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cm
 #else
 
 int main(int argc, char **argv) {
-	slice<string> args = strings_from_cstrings(scratch(), argc, argv);
+	slice<string> args = strings_from_cstrings(scratch(0, 0), argc, argv);
 	entry_point(args);
 
 	return 0;

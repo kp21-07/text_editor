@@ -32,7 +32,7 @@ buffer__sync_desired_column(Buffer *buffer)
 	Range_u64 range     = buffer_line_range(buffer, line);
 	string    data      = buffer->data.view();
 	string    line_str  = data.range(range.begin, buffer->cursor);
-	buffer->desired_col = string_column_count(line_str, TAB_WIDTH);
+	buffer->desired_col = string_column_count(line_str, cfg_u32(tab_width));
 }
 
 funcdef u64
@@ -51,7 +51,7 @@ buffer__index_from_column(string s, u64 target_column)
 			return i;
 
 		if (c == '\t') 
-			column += TAB_WIDTH - (column % TAB_WIDTH);
+			column += cfg_u32(tab_width) - (column % cfg_u32(tab_width));
 		else 
 			column += 1;
 	}
@@ -62,7 +62,7 @@ buffer__index_from_column(string s, u64 target_column)
 funcdef Load_Error
 buffer_init(Buffer *buffer, string path)
 {
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	MemZeroStruct(buffer);
@@ -177,7 +177,7 @@ buffer_insert(Buffer *buffer, string s)
 	if (!buffer) return;
 	Flag_Set(buffer->flags, Buffer_Dirty);
 
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	bool move_left = false;
@@ -378,7 +378,7 @@ buffer_map_clear(Buffer_Map *map)
 funcdef Buffer *
 buffer_map_insert(Buffer_Map *map, const Buffer& buffer)
 {
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	string path = buffer.path;
@@ -411,7 +411,7 @@ buffer_map_insert(Buffer_Map *map, const Buffer& buffer)
 funcdef Buffer *
 buffer_map_get(Buffer_Map *map, string path)
 {
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	path = os_path_canonical(t.arena, path);
@@ -420,7 +420,7 @@ buffer_map_get(Buffer_Map *map, string path)
 	u64 index = hash_string(path) % capacity;
 
 	for(u64 i=0; i<capacity; ++i) {
-		Temp t2 = temp_begin(scratch());
+		Temp t2 = temp_begin(scratch(&t.arena, 1));
 		defer(temp_end(t2));
 
 		if (!Flag_Check(table[index].flags, Buffer_Occupied))
@@ -442,7 +442,7 @@ buffer_map_get(Buffer_Map *map, string path)
 funcdef bool
 buffer_map_remove(Buffer_Map *map, string path)
 {
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	path = os_path_canonical(t.arena, path);
@@ -451,7 +451,7 @@ buffer_map_remove(Buffer_Map *map, string path)
 	u64 index = hash_string(path) % capacity;
 
 	for (u64 i=0; i<capacity; ++i) {
-		Temp t2 = temp_begin(scratch());
+		Temp t2 = temp_begin(scratch(&t.arena, 1));
 		defer(temp_end(t2));
 
 		if (!Flag_Check(table[index].flags, Buffer_Occupied))
@@ -499,7 +499,7 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 
 		f32 x = rect.from.x + (rect.size.x - dim.x) * 0.5f;
 		f32 y = rect.from.y + (rect.size.y - dim.y) * 0.5f;
-		gfx_draw_text(S(" no file "), {x, y}, THEME.error);
+		gfx_draw_text(S(" no file "), {x, y}, cfg_color(error));
 		return;
 	}
 
@@ -528,11 +528,13 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 
 	f32 max_scroll = Max(lines.len * line_h - rect.size.y, 0);
 	buffer->target_scroll_y = Clamp(buffer->target_scroll_y, 0, max_scroll);
+
 	// buffer->scroll_y = Lerp(
 	// 	buffer->scroll_y,
 	// 	buffer->target_scroll_y,
 	// 	1.0f - expf(-20.0f * delta_time())
 	// );
+
 	buffer->scroll_y = buffer->target_scroll_y;
 
 	// gutter
@@ -552,7 +554,7 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 	// draw lines
 
 	for (u64 i = first_visible_line; i < lines.len; ++i) {
-		Temp t0 = temp_begin(scratch());
+		Temp t0 = temp_begin(scratch(0, 0));
 		defer(temp_end(t0));
 
 		if (y > rect.from.y + rect.size.y) {
@@ -568,13 +570,13 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 			gfx_draw_quad(
 				{text_x, y, rect.size.x - gutter_width - 2, line_h},
 				{},
-				THEME.background_dim,
-				THEME.radius
+				cfg_color(current_line),
+				cfg_f32(radius)
 			);
 		}
 
 		string line_number = string_format(
-			scratch(),
+			t0.arena,
 			"%*zu",
 			(int)gutter_digits,
 			i + 1
@@ -584,18 +586,23 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 			gfx_draw_quad(
 				{rect.from.x + gutter_pad, y, digit_width * gutter_digits, line_h},
 				{},
-				THEME.gutter_foreground,
-				5
+				cfg_color(line_highlight),
+				cfg_f32(radius)
 			);
 		}
 
 		gfx_draw_text(
 			line_number,
 			{rect.from.x + gutter_pad, y},
-			current_line ? THEME.background : THEME.gutter_foreground
+			current_line ? cfg_color(gutter_foreground) : cfg_color(gutter)
 		);
 
-		vec4 rect = gfx_draw_text(line, {text_x, y}, THEME.foreground);
+		vec4 rect = gfx_draw_text(
+			line,
+			{text_x, y},
+			cfg_color(foreground)
+		);
+
 		vec2 size = { rect.z, rect.w };
 
 		if (current_line && ed_mode() != Ed_Mode::Command) {
@@ -608,19 +615,26 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 			vec2 cursor_pos = {cursor_x, y};
 
 			if (ed_mode() != Ed_Mode::Insert) {
-				gfx_draw_quad({cursor_pos.x, cursor_pos.y, space_width, line_h}, {}, THEME.cursor, 9999.9f);
+				gfx_draw_quad(
+					{cursor_pos.x, cursor_pos.y, space_width, line_h},
+					{},
+					cfg_color(cursor),
+					5.0f
+				);
 
 				if (cursor_offset < line.len) {
-					s32 width = 0;
-
+					int width = 0;
 					utf8_decode(line.range(cursor_offset, line.len), &width);
 
 					string cursor_char = line.range(cursor_offset, cursor_offset + width);
-
-					gfx_draw_text(cursor_char, cursor_pos, THEME.cursor_text);
+					gfx_draw_text(cursor_char, cursor_pos, cfg_color(cursor_text));
 				}
 			} else {
-				gfx_draw_quad({cursor_pos.x, cursor_pos.y, 2, line_h}, {}, THEME.cursor, 9999.9f);
+				gfx_draw_quad(
+					{cursor_pos.x, cursor_pos.y, 2, line_h},
+					{},
+					cfg_color(cursor)
+				);
 			}
 		}
 

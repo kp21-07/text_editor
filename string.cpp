@@ -1,3 +1,5 @@
+#include <errno.h>
+
 #include "editor.h"
 
 funcdef CharKind
@@ -35,54 +37,92 @@ rune char_get_pair(rune r)
     }
 }
 
-funcdef s64
-string_to_int(string s, bool *ok)
+
+funcdef s32
+string_to_s32(string s, bool *ok)
 {
-	s = string_strip(s);
+	Temp t = temp_begin(scratch(0, 0));
+	defer(temp_end(t));
 
-	if (s.len == 0) {
-		if (ok) *ok = false;
-		return 0;
-	}
+	s = string_to_cstring(t.arena, s);
 
-	u64 i = 0;
-	bool negative = false;
+    errno = 0;
 
-	if (s[0] == '-') {
-		negative = true;
-		i += 1;
-	}
-	else if (s[0] == '+') {
-		i += 1;
-	}
+    char *end;
+    long long value = strtoll((char *) s.raw, &end, 10);
 
-	if (i >= s.len) {
-		if (ok) *ok = false;
-		return 0;
-	}
+    bool success = end != (char *) s.raw && *end == '\0' && errno != ERANGE;
 
-	s64 result = 0;
+    if (ok)
+        *ok = success;
 
-	for (; i < s.len; ++i) {
-		u8 c = s[i];
+    return success ? (s32)value : 0;
+}
 
-		if (c < '0' || c > '9') {
-			if (ok) *ok = false;
-			return 0;
-		}
+funcdef int
+hex_char_to_int(char c, bool *ok) 
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    
+    *ok = false;
+    return 0;
+}
 
-		s64 digit = c - '0';
+funcdef vec4
+string_to_color(string s, bool *ok) // RRGGBBAA
+{
+    *ok = true;
 
-		result = result * 10 + digit;
-	}
+    if (s.len != 8) {
+        *ok = false;
+        return {};
+    }
 
-	if (negative) {
-		result = -result;
-	}
+    int components[4];
 
-	if (ok) *ok = true;
+    for (int i = 0; i < 4; i++) {
+        int high = hex_char_to_int(s[i * 2], ok);
+        int low  = hex_char_to_int(s[i * 2 + 1], ok);
 
-	return result;
+        if (!*ok) {
+            return {};
+        }
+
+        components[i] = (high << 4) | low;
+    }
+
+    return vec4{
+        (f32) components[0] / 255.0f, // Red
+        (f32) components[1] / 255.0f, // Green
+        (f32) components[2] / 255.0f, // Blue
+        (f32) components[3] / 255.0f  // Alpha
+    };
+}
+
+funcdef f32
+string_to_f32(string s, bool *ok)
+{
+	Temp t = temp_begin(scratch(0, 0));
+	defer(temp_end(t));
+
+	s = string_to_cstring(t.arena, s);
+
+	errno = 0;
+
+	char *end;
+	float value = strtof((char *)s.raw, &end);
+
+	bool success =
+		end != (char *)s.raw &&
+		*end == '\0' &&
+		errno != ERANGE;
+
+	if (ok)
+		*ok = success;
+
+	return success ? value : 0.0f;
 }
 
 funcdef string
@@ -259,6 +299,26 @@ string_count_lines(string s)
 	return count;
 }
 
+funcdef slice<string>
+string_to_lines(Arena *arena, string origin)
+{
+	u64 line_count = string_count_lines(origin);
+	slice<string> lines = alloc_slice(arena, string, line_count);
+
+	u64 prev  = 0;
+	u64 count = 0;
+	for (u64 i=0; i<origin.len; ++i) {
+		if (origin[i] == '\n')
+		{
+			lines[count] = origin.range(prev, i);
+			prev = i + 1;
+			count += 1;
+		}
+	}
+
+	return lines;
+}
+
 
 funcdef u64
 string_column_count(string s, int indent_width)
@@ -297,6 +357,8 @@ string_equal(string a, string b)
 
 	return memcmp(a.raw, b.raw, a.len) == 0;
 }
+
+
 
 // ~gaureesh @NOTE: utf8
 

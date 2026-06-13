@@ -13,44 +13,21 @@
 #define RGFW_NO_X11_CURSOR
 #include "vendor/rgfw.h"
 
-global struct {
-	bool initialized;
-
-	Arena *persist;
-
-} os_ctx;
-
 funcdef string
 os_string(OS os)
 {
 	return OS_STRINGS[(u64) os];
 }
 
-funcdef void
-os_init()
-{
-	if (os_ctx.initialized) return;
-	os_ctx.persist = arena_make(KB(4));
-	os_ctx.initialized = true;
-}
-
-funcdef void
-os_deinit()
-{
-	arena_delete(os_ctx.persist);
-}
-
 funcdef OS_Handle
-os_open_window(string title)
+os_open_window(Arena *arena, string title)
 {
-	os_init();
-
 	RGFW_glHints *hints = RGFW_getGlobalHints_OpenGL();
 	hints->major = 3;
 	hints->minor = 3;
 	RGFW_setGlobalHints_OpenGL(hints);
 
-	RGFW_window *win = alloc_struct(os_ctx.persist, RGFW_window);
+	RGFW_window *win = alloc_struct(arena, RGFW_window);
 	RGFW_createWindowPtr(
 		(char *) title.raw, 0, 0, 1280, 800,
 		RGFW_windowCenter | RGFW_windowAllowDND | RGFW_windowOpenGL,
@@ -156,7 +133,7 @@ os_time_diff(OS_TimeStamp t0, OS_TimeStamp t1)
 funcdef Load_Error
 os_file_to_buffer(u8 *ptr, u64 cap, u64 *out, string path)
 {
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	string cstring = string_to_cstring(t.arena, path);
@@ -181,7 +158,7 @@ os_file_to_buffer(u8 *ptr, u64 cap, u64 *out, string path)
 funcdef bool
 os_write_to_file(string path, bytes data)
 {
-	Temp t = temp_begin(scratch());
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
 	string cstring = string_to_cstring(t.arena, path);
@@ -241,6 +218,8 @@ file_kind_string(OS_FileKind kind)
 		return S("Text");
 	case OS_FileKind::Bash:
 		return S("Bash");
+	case OS_FileKind::Config:
+		return S("Config");
 	default:
 		return S("<Unknown>");
 	}

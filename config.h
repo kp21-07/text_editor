@@ -3,33 +3,73 @@
 
 #include "editor.h"
 
-const f32 FONT_HEIGHT = 24.0f;
-const u64 TAB_WIDTH   = 2;
+enum Config_Keywords {
+    Config_font_height,
+    Config_radius,
+    Config_tab_width,
 
-global struct {
-	vec4 background         = color(0x1A1B1EFF);
-	vec4 foreground         = color(0xD8D9DAFF);
-	vec4 background_dim     = color(0x121316FF);
+    Config_background,
+    Config_foreground,
+    Config_background_dim,
 
-	vec4 cursor             = color(0xE6B35AFF);
-	vec4 cursor_text        = color(0x1A1B1EFF);
+    Config_cursor,
+    Config_cursor_text,
 
-	vec4 line_highlight     = color(0x25272CFF);
-	vec4 current_line       = color(0x2E3138FF);
+    Config_selection,
 
-	vec4 gutter             = color(0x16171AFF);
-	vec4 gutter_foreground  = color(0x6B7078FF);
+    Config_line_highlight,
+    Config_current_line,
 
-	vec4 border             = color(0x353941FF);
+    Config_gutter,
+    Config_gutter_foreground,
 
-	vec4 status_line        = color(0x25272CFF);
-	vec4 status_line_dim    = color(0x1C1D21FF);
+    Config_border,
 
-	vec4 error              = color(0xE06C75FF);
-	vec4 accent             = color(0x61AFEFFF);
+    Config_status_line,
+    Config_status_line_dim,
 
-	f32  radius = 8.0f;
-} THEME;
+    Config_error,
+    Config_warning,
+    Config_success,
+
+    Config_accent,
+
+    Config_comment,
+    Config_keyword,
+    Config_string,
+    Config_number,
+    Config_type,
+    Config_function,
+    Config_operator,
+    Config_constant,
+    Config_preprocessor,
+    Config_macro,
+
+    Config_search_match,
+    Config_bracket_match,
+    Config_indent_guide,
+
+    Cfg_Keyword_Count,
+};
+
+union Config_Value {
+	vec4 float4;
+	f32  float1;
+	u32  uint32;
+	rune codepoint;
+};
+
+global Config_Value
+CONFIG_STATE [Cfg_Keyword_Count] = {};
+
+#define cfg_u32(x)    CONFIG_STATE[Config_##x].uint32
+#define cfg_f32(x)    CONFIG_STATE[Config_##x].float1
+#define cfg_color(x)  CONFIG_STATE[Config_##x].float4
+#define cfg_rune(x)   CONFIG_STATE[Config_##x].codepoint
+
+global const string
+CONFIG_KEYWORD_STR[Cfg_Keyword_Count] = {
+};
 
 #include "embed.data"
 

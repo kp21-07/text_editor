@@ -54,10 +54,10 @@ os_file_data(string path)
 {
 	OS_FileData result = {};
  
-	Temp t = {};
+	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
  
-	string cstr = string_to_cstring(scratch(&t), path);
+	string cstr = string_to_cstring(t.arena, path);
 	if (!cstr.raw) return result;
 	const char *ext = nullptr;
 	for (const char *c = (const char *)cstr.raw; *c; ++c)
@@ -76,6 +76,7 @@ os_file_data(string path)
 		else if (_stricmp(ext, ".cpp") == 0 || _stricmp(ext, ".hpp") == 0) result.kind = OS_FileKind::Cpp;
 		else if (_stricmp(ext, ".sh") == 0) result.kind = OS_FileKind::Bash;
 		else if (_stricmp(ext, ".txt") == 0) result.kind = OS_FileKind::Text;
+		else if (_stricmp(ext, ".data") == 0) result.kind = OS_FileKind::Config;
 	}
  
 	WIN32_FILE_ATTRIBUTE_DATA attrs;
@@ -116,10 +117,10 @@ os_set_working_dir(string dir)
 funcdef string
 os_get_working_dir(Arena *arena)
 {
-	Temp t0 = temp_begin(scratch());
+	Temp t0 = temp_begin(scratch(&arena, 1));
 	defer(temp_end(t0));
 
-	slice<char> temp_page = alloc_slice(scratch(), char, KB(4));
+	slice<char> temp_page = alloc_slice(t0.arena, char, KB(4));
 
 	if (!_getcwd(temp_page.raw, (int)temp_page.len)) {
 		return {};
@@ -137,10 +138,10 @@ os_get_working_dir(Arena *arena)
 funcdef string
 os_path_canonical(Arena *arena, string path)
 {
-    Temp t0 = temp_begin(scratch());
+    Temp t0 = temp_begin(scratch(&arena, 1));
     defer(temp_end(t0));
 
-    auto temp_page = alloc_slice(scratch(), char, KB(4));
+    auto temp_page = alloc_slice(t0.arena, char, KB(4));
 
     u64 copy_len = Min(path.len, KB(4) - 1);
     memcpy(temp_page.raw, path.raw, copy_len);

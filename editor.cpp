@@ -1,5 +1,5 @@
 #include "editor.h"
-
+#include "config.h"
 
 global struct {
 	Arena *persist_arena;
@@ -22,6 +22,103 @@ global struct {
 
 
 funcdef void
+ed__load_config_file(string path)
+{
+	Temp t1 = temp_begin(scratch(0, 0));
+	defer(temp_end(t1));
+
+	string data = string_from_bytes(
+		os_load_entire_file(t1.arena, path)
+	);
+
+	slice<string> lines = string_to_lines(t1.arena, data);
+
+	for (u64 i=0; i<lines.len; ++i) {
+		Temp t2 = temp_begin(t1.arena);
+		defer(temp_end(t2));
+
+		string line = string_strip(lines[i]);
+		if (!line.len || line[0] == '#')
+			continue;
+	
+		slice<string> tokens = string_split(line, t2.arena);
+
+		if (tokens.len != 2)
+			continue;
+
+		string keyword = tokens[0];
+		string value   = tokens[1];
+
+#define parse_cfg_value(key_str, type_suffix, parse_func, return_type, var_name, condition) \
+    else if (string_equal(keyword, S(key_str))) {                                           \
+        bool ok = false;                                                                    \
+        return_type v = (return_type) parse_func(value, &ok);                               \
+        if (ok && (condition)) {                                                            \
+            cfg_##type_suffix(var_name) = v;                                                \
+        }                                                                                   \
+    }
+		
+#define parse_cfg_f32(name, cond)   parse_cfg_value(#name, f32,  string_to_f32,   f32,  name, cond)
+#define parse_cfg_s32(name, cond)   parse_cfg_value(#name, u32,  string_to_s32,   s32,  name, cond)
+#define parse_cfg_color(name)       parse_cfg_value(#name, color, string_to_color, vec4, name, true)
+
+		if (false) {}
+		parse_cfg_f32(font_height, v > 5.0f)
+		parse_cfg_f32(radius, v >= 0.0f)
+		parse_cfg_s32(tab_width, v >= 1)
+
+		parse_cfg_color(background)
+		parse_cfg_color(foreground)
+		parse_cfg_color(background_dim)
+
+		parse_cfg_color(cursor)
+		parse_cfg_color(cursor_text)
+
+		parse_cfg_color(selection)
+
+		parse_cfg_color(line_highlight)
+		parse_cfg_color(current_line)
+
+		parse_cfg_color(gutter)
+		parse_cfg_color(gutter_foreground)
+
+		parse_cfg_color(border)
+
+		parse_cfg_color(status_line)
+		parse_cfg_color(status_line_dim)
+
+		parse_cfg_color(error)
+		parse_cfg_color(warning)
+		parse_cfg_color(success)
+
+		parse_cfg_color(accent)
+
+		parse_cfg_color(comment)
+		parse_cfg_color(keyword)
+		parse_cfg_color(string)
+		parse_cfg_color(number)
+		parse_cfg_color(type)
+		parse_cfg_color(function)
+		parse_cfg_color(operator)
+		parse_cfg_color(constant)
+		parse_cfg_color(preprocessor)
+		parse_cfg_color(macro)
+
+		parse_cfg_color(search_match)
+		parse_cfg_color(bracket_match)
+		parse_cfg_color(indent_guide)
+
+		else {}
+
+#undef parse_cfg_value
+#undef parse_cfg_f32
+#undef parse_cfg_s32
+#undef parse_cfg_color
+	}
+}
+
+
+funcdef void
 ed__init_workspace()
 {
 	buffer_map_clear(&ed_ctx.buffer_map);
@@ -36,11 +133,52 @@ funcdef void
 ed_init()
 {
 	ed_ctx.persist_arena   = arena_make(MB(4));
-	ed_ctx.frame_arena     = arena_make(MB(4));
-	ed_ctx.modal_arena     = arena_make(MB(4));
-	ed_ctx.workspace_arena = arena_make(MB(4));
+	ed_ctx.frame_arena     = arena_make(MB(1));
+	ed_ctx.modal_arena     = arena_make(KB(256));
+	ed_ctx.workspace_arena = arena_make(KB(512));
+
+	/////////////
+	// fallback config
+
+	cfg_f32(font_height) = 24.0f;
+	cfg_f32(radius)      = 6.0f;
+	cfg_u32(tab_width)   = 2;
+
+	cfg_color(background) = color(0x1E2326FF);
+	cfg_color(foreground) = color(0xD3C6AAFF);
+	cfg_color(background_dim) = color(0x272E33FF);
+	cfg_color(cursor) = color(0xA7C080AA);
+	cfg_color(cursor_text) = color(0x1A1A1AFF);
+	cfg_color(selection) = color(0xA7C08022);
+	cfg_color(line_highlight) = color(0x2C4841FF);
+	cfg_color(current_line) = color(0x2D3539FF);
+	cfg_color(gutter) = color(0x7A8478FF);
+	cfg_color(gutter_foreground) = color(0xAAAAAAFF);
+	cfg_color(border) = color(0x9DA9A0AA);
+	cfg_color(status_line) = color(0x1A1A1AFF);
+	cfg_color(status_line_dim) = color(0x0A0A0AFF);
+	cfg_color(error) = color(0x772222FF);
+	cfg_color(warning) = color(0x986032FF);
+	cfg_color(success) = color(0x227722FF);
+	cfg_color(accent) = color(0x7A8478FF);
+	cfg_color(comment) = color(0x3DDF23FF);
+	cfg_color(keyword) = color(0xFFFFFFFF);
+	cfg_color(string) = color(0x0FDFAFFF);
+	cfg_color(number) = color(0xD699B5FF);
+	cfg_color(type) = color(0x98FB98FF);
+	cfg_color(function) = color(0xD3B58DFF);
+	cfg_color(operator) = color(0xE0AD82FF);
+	cfg_color(constant) = color(0x7FFFD4FF);
+	cfg_color(preprocessor) = color(0xE67D74FF);
+	cfg_color(macro) = color(0xE0AD82FF);
+	cfg_color(search_match) = color(0xCD6889FF);
+	cfg_color(bracket_match) = color(0xFCEDFC26);
+	cfg_color(indent_guide) = color(0xFCEDFC26);
+
+	/////////////
 
 	ed__init_workspace();
+	ed__load_config_file(S("./config.data"));
 }
 
 funcdef void
@@ -80,6 +218,7 @@ modal_string(Ed_Mode mode)
 		case Ed_Mode::Insert:  return S("insert");
 		case Ed_Mode::Command: return S("command");
 		case Ed_Mode::Buffer_Search: return S("buffer search");
+		case Ed_Mode::Visual: return S("visual");
 	}
 
 	return {};
@@ -237,8 +376,8 @@ ed_exec_command(Ed_Cmd cmd)
 
 		case Cmd_Delete_String:
 			if (ed_mode() == Ed_Mode::Command || ed_mode() == Ed_Mode::Buffer_Search) {
-				if (ed_ctx.cmd_string.len > 0)	
-					ed_ctx.cmd_string.len -= 1;
+				if (ed_ctx.cmd_string.len >= cmd.arg_u64)	
+					ed_ctx.cmd_string.len -= cmd.arg_u64;
 			} else {
 				buffer_delete(ed_ctx.active_buffer, cmd.arg_u64, cmd.arg_dir);
 			}
@@ -258,6 +397,13 @@ ed_exec_command(Ed_Cmd cmd)
 			string path = cmd.arg_string;
 			os_set_working_dir(path);
 			ed__init_workspace();
+        } break;
+        
+		case Cmd_Reload: {
+			if (ed_active() && ed_active()->file_kind == OS_FileKind::Config) {
+				ed_exec_command(save_buffer());
+			}
+			ed__load_config_file(S("./config.data"));
         } break;
 
         case Cmd_Exit: {
@@ -367,6 +513,14 @@ jump_to_line(u64 line)
 	return cmd;
 }
 
+funcdef Ed_Cmd
+reload_config()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Reload;
+	return cmd;
+}
+
 
 funcdef string
 cmd_function(Ed_CmdKind kind)
@@ -376,7 +530,9 @@ cmd_function(Ed_CmdKind kind)
 		case Cmd_Buffer_Close: return S("close");
 		case Cmd_Buffer_Save:  return S("save");
 		case Cmd_Exit:         return S("exit");
+		case Cmd_Reload:       return S("reload");
 		default:
 			return S("");
 	}
 }
+

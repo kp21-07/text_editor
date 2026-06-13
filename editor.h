@@ -28,12 +28,12 @@ template<typename T>
 struct slice {
 	T   *raw;
 	u64  len;
-	
+
 	slice<T> range(u64 begin, u64 end) {
 		assert(begin <= len);
 		assert(begin <= end);
 		assert(end <= len);
-		
+
 		return {
 			raw + begin,
 			end - begin
@@ -42,7 +42,7 @@ struct slice {
 
 	T& operator[](u64 index) {
 		assert(index < this->len);
-	return this->raw[index];
+		return this->raw[index];
 	}
 };
 
@@ -116,6 +116,23 @@ typedef u32 rune;
 
 #ifndef __cplusplus
 # error "compiler should be c++"
+#endif
+
+#if defined(__has_feature)
+# if __has_feature(address_sanitizer)
+#  define ASAN_ENABLED
+# endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+# define ASAN_ENABLED
+#endif
+#if defined(ASAN_ENABLED)
+# include <sanitizer/asan_interface.h>
+# define ASAN_Poison(addr, size)   __asan_poison_memory_region((addr), (size))
+# define ASAN_Unpoison(addr, size) __asan_unpoison_memory_region((addr), (size))
+#else
+# define ASAN_Poison(addr, size)   ((void)0)
+# define ASAN_Unpoison(addr, size) ((void)0)
 #endif
 
 //////////////
@@ -211,8 +228,9 @@ funcdef void   arena_free(Arena *arena);
 
 funcdef Temp   temp_begin(Arena *arena);
 funcdef void   temp_end(Temp temp);
+funcdef void   temp_rollback(Temp temp);
 
-funcdef Arena *scratch(Temp *temp = nullptr);
+funcdef Arena *scratch(Arena **conflicts, u64 count);
 
 #define alloc_struct(_arr, _T) (_T *) arena_allocate((_arr), nullptr, 0, sizeof(_T), alignof(_T))
 #define alloc_slice(_arr, _T, _n) slice<_T> { (_T *) arena_allocate((_arr), nullptr, 0, sizeof(_T) * (_n), alignof(_T)), (u64) (_n) }
@@ -250,15 +268,12 @@ const string OS_STRINGS[(u32) OS::Count] = {
 	S("Mac"),
 };
 
-funcdef void os_init();
-funcdef void os_deinit();
-
 funcdef void *os_reserve(u64 size);
 funcdef bool  os_commit(void *ptr, u64 size);
 funcdef void  os_decommit(void *ptr, u64 size);
 funcdef void  os_release(void *ptr, u64 size);
 
-funcdef OS_Handle os_open_window(string title);
+funcdef OS_Handle os_open_window(Arena *arena, string title);
 funcdef void os_close_window(OS_Handle window);
 funcdef bool os_window_should_close(OS_Handle window);
 funcdef OS_Input os_prepare_frame(OS_Handle window);
@@ -287,6 +302,7 @@ enum OS_FileFlag {
 enum class OS_FileKind : u32 {
 	Unknown,
 
+	Config,
 	C,
 	Cpp,
 	Bash,
@@ -317,6 +333,7 @@ funcdef bool        os_write_to_file(string path, bytes data);
 
 funcdef void os_set_working_dir(string dir);
 funcdef string os_get_working_dir(Arena *arena);
+funcdef string os_get_exec_directory(Arena *arena);
 funcdef string os_path_canonical(Arena *arena, string path);
 // funcdef slice<string> os_list_files(Arena *arena, string path);
 
@@ -336,7 +353,10 @@ enum CharKind {
 funcdef CharKind char_kind(rune r);
 funcdef rune     char_get_pair(rune r);
 
-funcdef s64    string_to_int(string s, bool *ok);
+funcdef s32    string_to_s32(string s, bool *ok);
+funcdef f32    string_to_f32(string s, bool *ok);
+funcdef vec4   string_to_color(string s, bool *ok);
+
 funcdef string string_strip(string s);
 funcdef string string_copy(Arena *arena, string s);
 funcdef string string_from_bytes(bytes data);
@@ -346,6 +366,7 @@ funcdef string string_from_cstring(Arena *arena, char *cstring);
 funcdef string string_to_cstring(Arena *arena, string s);
 funcdef string string_from_list(list<u8> data);
 funcdef u64    string_count_lines(string s);
+funcdef slice<string> string_to_lines(Arena *arena, string origin);
 funcdef u64    string_column_count(string s, int indent_width);
 funcdef bool   string_equal(string a, string b);
 
@@ -519,13 +540,15 @@ struct Buffer {
 	u64 cursor;
 	u64 desired_col;
 
+	Range_u64 selection;
+
 	// -- meta data --
 
 	Buffer_Flags flags;
 	OS_FileKind file_kind;
 
-	// -- visual info -- 
-
+	// -- view data --
+	
 	f32 scroll_y;
 	f32 target_scroll_y;
 };
@@ -572,6 +595,7 @@ enum class Ed_Mode {
 	Insert,
 	Command,
 	Buffer_Search,
+	Visual,
 };
 
 enum Ed_CmdKind {
@@ -583,6 +607,7 @@ enum Ed_CmdKind {
 	Cmd_Buffer_Close,
 	Cmd_Buffer_Save,
 	Cmd_Exit,
+	Cmd_Reload,
 
 	Cmd_In_Palette_End,
 
@@ -641,8 +666,10 @@ funcdef Ed_Cmd move_cursor(Direction dir, u64 count);
 funcdef Ed_Cmd insert_string(string str);
 funcdef Ed_Cmd delete_string(Direction dir, u64 count);
 funcdef Ed_Cmd jump_to_line(u64 line);
+funcdef Ed_Cmd reload_config();
 
 funcdef string cmd_function(Ed_CmdKind kind);
+funcdef string get_config_dir();
 
 
 #endif

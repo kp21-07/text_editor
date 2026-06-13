@@ -1,30 +1,51 @@
 # editor config
 
-font_height 24.0
+font_height 30.0
+radius      10.0
 tab_width   2
 
 # theme
 
-background        1A1B1EFF
-foreground        D8D9DAFF
-background_dim    121316FF
+background        1E2326FF
+foreground        D3C6AAFF
+background_dim    272E33FF
 
-cursor            B3E65AFF
-cursor_text       1A1B1EFF
+cursor            A7C080AA
+cursor_text       1A1A1AFF
 
-line_highlight    25272CFF
-current_line      2E3138FF
+selection         A7C08022
 
-gutter            16171AFF
-gutter_foreground 6B7078FF
+line_highlight    2C4841FF
+current_line      2D3539FF
 
-border            353941FF
+gutter            7A8478FF
+gutter_foreground AAAAAAFF
 
-status_line       25272CFF
-status_line_dim   1C1D21FF
+border            9DA9A0AA
 
-error             E06C75FF
-accent            61AFEFFF
+status_line       1A1A1AFF
+status_line_dim   0A0A0AFF
+
+error             772222FF
+warning           986032FF
+success           227722FF
+
+accent            7A8478FF
+
+comment           3DDF23FF
+keyword           FFFFFFFF
+string            0FDFAFFF
+number            D699B5FF
+type              98FB98FF
+function          D3B58DFF
+operator          E0AD82FF
+constant          7FFFD4FF
+preprocessor      E67D74FF
+macro             E0AD82FF
+
+search_match      CD6889FF
+bracket_match     FCEDFC26
+indent_guide      FCEDFC26
 
 # bindings - universal
 

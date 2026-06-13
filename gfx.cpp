@@ -7,7 +7,7 @@
 #include "vendor/stb_truetype.h"
 
 const u64 MAX_QUADS  = 4098;
-const u64 ATLAS_SIZE = 1024;
+const u64 ATLAS_SIZE = 512;
 const u64 FIRST_CHAR = 32;
 const u64 NUM_CHARS  = 96;
 
@@ -254,7 +254,7 @@ gfx_init(OS_Handle window, Arena *persist, Arena *frame)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ONE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
 
-		gfx_set_font_height(FONT_HEIGHT);
+		gfx_set_font_height(cfg_f32(font_height));
 	}
 
 	glActiveTexture(GL_TEXTURE0);
@@ -273,9 +273,7 @@ gfx_init(OS_Handle window, Arena *persist, Arena *frame)
 funcdef void
 gfx_set_font_height(f32 height)
 {
-	if (height <= 0)
-		return;
-
+	height = Clamp(10, height, 90);
 	gfx_ctx.font_height = height;
 
 	gfx__rebuild_font_atlas(height);
@@ -312,7 +310,7 @@ gfx_begin()
 	).seconds;
 	gfx_ctx.last_frame_time = curr;
 
-	vec4 cc = THEME.background;
+	vec4 cc = cfg_color(background);
 
 	glClearColor(cc.x, cc.y, cc.z, cc.w);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -426,7 +424,8 @@ gfx_draw_text(string s, vec2 position, vec4 col, f32 max_width)
 
         if (c == '\t')
         {
-            u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
+			u32 tab_width = cfg_u32(tab_width);
+            u64 spaces = tab_width - (column % tab_width);
 
             for (u64 t = 0; t < spaces; ++t)
             {
@@ -566,7 +565,8 @@ gfx_measure_text(string s, f32 max_width)
 
         if (c == '\t')
         {
-            u64 spaces = TAB_WIDTH - (column % TAB_WIDTH);
+			u32 tab_width = cfg_u32(tab_width);
+			u64 spaces = tab_width - (column % tab_width);
 
             stbtt_bakedchar *space =
                 &gfx_ctx.baked_chars[' ' - FIRST_CHAR];
@@ -704,7 +704,7 @@ funcdef void
 gfx__rebuild_font_atlas(f32 pixel_height)
 {
 	Temp t = temp_begin(gfx_ctx.persist);
-	defer(temp_end(t));
+	defer(temp_rollback(t));
 
 	bytes bitmap     = alloc_slice(t.arena, u8, ATLAS_SIZE * ATLAS_SIZE);
 	bytes ttf_buffer = FALLBACK_FONT;

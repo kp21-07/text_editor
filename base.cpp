@@ -89,10 +89,13 @@ hash_string(string s)
 
     const u8 *p = (const u8 *)s.raw;
 
-    for (size_t i = 0; i < s.len; ++i) {
+	u64 i=0;
+	while(i < s.len)
+	{
         h ^= p[i];
         h *= 1099511628211ULL;
-    }
+		i += 1;
+	}
 
     return h;
 }

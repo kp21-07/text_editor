@@ -10,22 +10,19 @@ funcdef void layout_buffer_search_ui(Quad window);
 
 void entry_point(slice<string> args)
 {
-	os_init();
-	defer(os_deinit());
-
 	ed_init();
 	defer(ed_deinit());
 
 	ed_exec_command(open_buffer(args.range(1, args.len)));
     
-	OS_Handle win = os_open_window(S("editor"));
+	OS_Handle win = os_open_window(persist_arena(), S("editor"));
 	defer(os_close_window(win));
     
 	gfx_init(win, persist_arena(), frame_arena());
 	defer(gfx_deinit());
 
 	ui_init(persist_arena(), frame_arena());
-    
+
 	while(!os_window_should_close(win)) 
 	{
 		arena_free(frame_arena());
@@ -39,6 +36,7 @@ void entry_point(slice<string> args)
 				case ':':  cmd = change_mode(Ed_Mode::Command); break;
 				case 'i':  cmd = change_mode(Ed_Mode::Insert); break;
 				case '\t': cmd = change_mode(Ed_Mode::Buffer_Search); break;
+				case 'v':  cmd = change_mode(Ed_Mode::Visual); break;
 
 				case 'h': cmd = move_cursor(Direction::Left, 1); break;
 				case 'j': cmd = move_cursor(Direction::Down, 1); break;
@@ -96,12 +94,12 @@ void entry_point(slice<string> args)
 
 				case '-': {
 					f32 curr_height = gfx_get_font_height();
-					gfx_set_font_height(Max(curr_height - 2, 12));
+					gfx_set_font_height(curr_height - 2);
 				} break;
 
 				case '+' : {
 					f32 curr_height = gfx_get_font_height();
-					gfx_set_font_height(Min(curr_height + 2, 120));
+					gfx_set_font_height(curr_height + 2);
 				} break;
 			}
 
@@ -117,6 +115,19 @@ void entry_point(slice<string> args)
 				ed_exec_command(cmd);
 			} break;
 
+			case '\t': {
+				string cmd_string = ed_command_string();
+				slice<string> paths = ed_open_buffers();
+				paths = fuzzy_filter(paths, cmd_string, frame_arena());
+
+				if (paths.len > 0) {
+					Ed_Cmd cmd = delete_string(Direction::Left, cmd_string.len);
+					ed_exec_command(cmd);
+
+					cmd = insert_string(paths[0]);
+					ed_exec_command(cmd);
+				}
+			} break;
 			case '\n': {
 				Ed_Cmd cmd = {};
 
@@ -156,13 +167,16 @@ void entry_point(slice<string> args)
 				} break;
 
 				case '\n': {
-					Temp t0 = temp_begin(scratch());
+					Temp t0 = temp_begin(scratch(0, 0));
 					defer(temp_end(t0));
 
-					slice<string> args = ed_command_strings(scratch());
+					slice<string> args = ed_command_strings(t0.arena);
 
 					Ed_Cmd cmd = parse_command(args);
 					ed_exec_command(cmd);
+					if (cmd.kind == Cmd_Reload) {
+						gfx_set_font_height(cfg_f32(font_height));
+					}
 
 					cmd = change_mode(Ed_Mode::Normal);
 					ed_exec_command(cmd);
@@ -205,6 +219,13 @@ void entry_point(slice<string> args)
 					ed_exec_command(post);
 				} break;
 			}
+		} else if (curr_mode == Ed_Mode::Visual) {
+			switch (input.codepoint) {
+				case '\x1b': {
+					Ed_Cmd cmd = change_mode(Ed_Mode::Normal);
+					ed_exec_command(cmd);
+				} break;
+			}
 		}
 
 		ivec2 win_size = os_window_size(win);
@@ -219,15 +240,15 @@ void entry_point(slice<string> args)
 		layout_editor_ui(window_rect);
 
 		switch (ed_mode()) {
-			case Ed_Mode::Command : layout_command_ui(window_rect); break;
-			case Ed_Mode::Buffer_Search : layout_buffer_search_ui(window_rect); break;
-			default : break;
+		case Ed_Mode::Command:
+			layout_command_ui(window_rect);
+			break;
+		case Ed_Mode::Buffer_Search:
+			layout_buffer_search_ui(window_rect);
+			break;
+		default:
+			break;
 		}
-
-
-		static u64 tick = 0;
-		gfx_draw_text(string_format(frame_arena(), "%d", (int) tick), {0,0}, THEME.error);
-		tick += 1;
 
 		gfx_end();
 	}
@@ -312,7 +333,7 @@ parse_command (slice<string> args)
 	string main_arg = args[0];
 
 	bool int_ok = false;
-	s64 i_val = string_to_int(main_arg, &int_ok);
+	s64 i_val = string_to_s32(main_arg, &int_ok);
 
 	if (int_ok && i_val >= 0) {
 		return jump_to_line((u64) i_val);
@@ -342,6 +363,10 @@ parse_command (slice<string> args)
 		return close_buffer(paths);
 	} else if (string_equal(main_arg, cmd_function(Cmd_Buffer_Save))) {
 		Ed_Cmd cmd = save_buffer();
+		return cmd;
+	}
+	else if (string_equal(main_arg, cmd_function(Cmd_Reload))) {
+		Ed_Cmd cmd = reload_config();
 		return cmd;
 	}
 
@@ -376,34 +401,33 @@ layout_editor_ui(Quad window)
 
 	UI_Config status = {};
 	status.flags = UI_Clip_Children;
-	status.fill_color = THEME.background_dim;
-	status.border_color = THEME.border;
-	status.radius = THEME.radius;
+	status.fill_color = cfg_color(status_line);
+	status.radius = cfg_f32(radius);
 	status.size = {size_fill(1.0), size_fit()};
 	status.layout = Layout_Row;
 	status.padding = Pad(4);
-	status.border = 1.0f;
 	status.gap = 4.0;
 
 	Ed_Mode mode = ed_mode();
 
 	UI(status) {
-		UI(fit_container(THEME.accent, Pad_XY(4, 0), THEME.radius - 4)) {
-			UI(label(modal_string(mode), THEME.background));
+		UI(fit_container(cfg_color(accent), Pad_XY(4, 0), cfg_f32(radius) - 4)) {
+			UI(label(modal_string(mode), cfg_color(background)));
 		}
 		
 		UI(gap({size_fill(1.0), size_fill(1.0)}));
 
 		if (ed_active()) {
-			UI(label(ed_active()->path, THEME.foreground));
-			UI(fit_container(THEME.accent, Pad_XY(4, 0), THEME.radius - 4)) {
-				UI(label(file_kind_string(ed_active()->file_kind), THEME.background));
+			UI(label(ed_active()->path, cfg_color(accent)));
+			UI(fit_container(cfg_color(accent), Pad_XY(4, 0), cfg_f32(radius) - 4)) {
+				UI(label(file_kind_string(ed_active()->file_kind), cfg_color(background)));
 			}
 		} else {
-			UI(fit_container(THEME.gutter_foreground, Pad_XY(4, 0), THEME.radius - 4))
-				UI(label(ed_directory(), THEME.background));
-		} 
+			UI(fit_container(cfg_color(border), Pad_XY(4, 0), cfg_f32(radius) - 4))
+				UI(label(ed_directory(), cfg_color(foreground)));
+		}
 	}
+
 	ui_end_frame();
 	
 	draw_buffer_view(ed_active(), panel_box->rect);
@@ -430,18 +454,19 @@ layout_command_ui(Quad window)
 	UI_Config cmd_line = {};
 	cmd_line.flags = UI_Drop_Shadow | UI_Clip_Children;
 	cmd_line.size = { size_fill(1.0), size_fit() };
-	cmd_line.radius = 10.0f;
-	cmd_line.fill_color = THEME.background_dim;
-	cmd_line.border_color = THEME.border;
+	cmd_line.radius = cfg_f32(radius);
+	cmd_line.fill_color = cfg_color(background_dim);
+	cmd_line.border_color = cfg_color(border);
 	cmd_line.border = 1.0f;
 	cmd_line.padding = Pad(10);
 	cmd_line.layout = Layout_Row;
 
 	UI(cmd_line) {
-		UI(label(ed_command_string(), THEME.gutter_foreground));
+		UI(label(ed_command_string(), cfg_color(foreground)));
+
 		UI_Config cursor = {};
 		cursor.size = { size_fixed(2), size_fill(1) };
-		cursor.fill_color = THEME.cursor;
+		cursor.fill_color = cfg_color(cursor);
 		UI(cursor);
 	}
 
@@ -471,9 +496,9 @@ layout_buffer_search_ui(Quad window)
 	UI_Config search_panel = {};
 	search_panel.flags = UI_Drop_Shadow | UI_Clip_Children;
 	search_panel.size = { size_fill(1.0), size_fill(1.0) };
-	search_panel.radius = 10.0f;
-	search_panel.fill_color = THEME.background_dim;
-	search_panel.border_color = THEME.border;
+	search_panel.radius = cfg_f32(radius);
+	search_panel.fill_color = cfg_color(background_dim);
+	search_panel.border_color = cfg_color(border);
 	search_panel.border = 1.0f;
 	search_panel.padding = Pad(10);
 	search_panel.layout = Layout_Col;
@@ -487,29 +512,34 @@ layout_buffer_search_ui(Quad window)
 
 		string cmd_string = ed_command_string();
 
+		slice<string> paths = ed_open_buffers();
+		paths = fuzzy_filter(paths, cmd_string, frame_arena());
+
 		//
 		// search box
 		//
 
 		UI(search_box) {
-			UI(label(cmd_string, THEME.foreground));
+			UI(label(cmd_string, cfg_color(foreground)));
 
 			UI_Config cursor = {};
 			cursor.size = { size_fixed(2), size_fill(1) };
-			cursor.fill_color = THEME.cursor;
+			cursor.fill_color = cfg_color(cursor);
+
 			UI(cursor);
+
+			if (paths.len > 0 && cmd_string.len > 0) {
+				UI(label(paths[0].range(cmd_string.len, paths[0].len), cfg_color(status_line)));
+			}
 		}
 
 		//
 		// results
 		//
 
-		slice<string> paths = ed_open_buffers();
-		paths = fuzzy_filter(paths, cmd_string, frame_arena());
-
 		for (u64 i=0; i<paths.len; ++i) {
 			string path_str = paths[i];
-			UI(label(path_str, THEME.gutter_foreground));
+			UI(label(path_str, cfg_color(gutter_foreground)));
 		}
 	}
 
