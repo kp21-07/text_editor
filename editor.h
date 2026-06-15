@@ -12,6 +12,10 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+#define funcdef       static
+#define local_persist static
+#define global        static
+
 typedef uint8_t  u8;
 typedef  int8_t  s8;
 typedef uint16_t u16;
@@ -82,8 +86,12 @@ typedef slice<u8> bytes;
 typedef slice<const u8> string;
 typedef u32 rune;
 
+#define Ctrl(x) ((rune)(x) & (rune)(0x1F))
+
 #define S(x) string { (const u8 *) (x), sizeof(x) - 1 }
 #define S_FMT(s) (int) s.len, (char *) s.raw
+
+#define Align_Up_Power_2(val, alignment) (((val) + (alignment) - 1) & ~((alignment) - 1));
 
 //////////
 // ~gaureesh @NOTE: os and compiler detection
@@ -135,18 +143,14 @@ typedef u32 rune;
 # define ASAN_Unpoison(addr, size) ((void)0)
 #endif
 
-//////////////
-// ~gaureesh @NOTE: useful macro definitions
-
 struct Arena {
 	u64   reserved;
 	u64   committed;
 	u64   used;
 };
 
-#define funcdef       static
-#define local_persist static
-#define global        static
+//////////////
+// ~gaureesh @NOTE: useful macro definitions and 
 
 #define Max(a, b) ((a) > (b) ? (a) : (b))
 #define Min(a, b) ((a) < (b) ? (a) : (b))
@@ -154,7 +158,6 @@ struct Arena {
 
 #define Lerp(a, b, t) ((a) + ((b) - (a)) * (t));
 
-#define Align_Up_Power_2(val, alignment) (((val) + (alignment) - 1) & ~((alignment) - 1));
 #define MemZeroStruct(s) memset(s, 0, sizeof(*s))
 
 #define KB(x) (u64) (x << 10)
@@ -207,6 +210,48 @@ digit_count_u64(u64 n) {
     }
     return count;
 }
+
+
+//////////////
+// ~gaureesh @NOTE: big array
+
+
+template<typename T>
+struct big_array {
+	Arena *arena;
+	u64    len;
+
+	global constexpr u64 DATA_OFFSET =
+		Align_Up_Power_2(sizeof(Arena), alignof(T));
+
+    T *data() {
+        return (T *)((u8 *)arena + DATA_OFFSET);
+    }
+
+    T& operator[](u64 index) {
+        assert(index < len);
+        return data()[index];
+    }
+
+	slice<const T> view() {
+		return {
+			this->data(),
+			len
+		};
+	}
+};
+
+template<typename T>
+funcdef big_array<T> big_array_make(u64 capacity);
+
+template<typename T>
+funcdef void big_array_delete(big_array<T> *array);
+
+template<typename T>
+funcdef void big_array_push(big_array<T> *array, T value);
+
+template<typename T>
+funcdef void big_array_pop(big_array<T> *array, u64 index);
 
 
 //////////////
@@ -337,6 +382,8 @@ funcdef string os_get_exec_directory(Arena *arena);
 funcdef string os_path_canonical(Arena *arena, string path);
 // funcdef slice<string> os_list_files(Arena *arena, string path);
 
+funcdef string os_get_clipboard_string(Arena *arena);
+funcdef void   os_set_clipboard_string(string str);
 
 //////////////
 // ~gaureesh @NOTE: string
@@ -356,6 +403,7 @@ funcdef rune     char_get_pair(rune r);
 funcdef s32    string_to_s32(string s, bool *ok);
 funcdef f32    string_to_f32(string s, bool *ok);
 funcdef vec4   string_to_color(string s, bool *ok);
+funcdef int    hex_char_to_int(char c, bool *ok);
 
 funcdef string string_strip(string s);
 funcdef string string_copy(Arena *arena, string s);
@@ -369,6 +417,7 @@ funcdef u64    string_count_lines(string s);
 funcdef slice<string> string_to_lines(Arena *arena, string origin);
 funcdef u64    string_column_count(string s, int indent_width);
 funcdef bool   string_equal(string a, string b);
+funcdef bool   string_starts_with(string original, string pattern);
 
 funcdef slice<string> string_split(string original, Arena *arena);
 funcdef slice<string> strings_from_cstrings(Arena *arena, int count, char **cstrings);
@@ -517,10 +566,46 @@ funcdef UI_Config label(string s, vec4 color, UI_SizeKind x_size = Size_Fixed, U
 funcdef UI_Config fit_container(vec4 color, UI_Padding pad = {}, f32 radius = 0);
 
 ////////////////////////
+// ~gaureesh @NOTE: languages 
+
+enum Lang_TokeKind : u16 {
+	Token_None,
+	Token_Identifier,
+	Token_Keyword,
+	Token_String,
+	Token_Number,
+	Token_Comment,
+	Token_Symbol,
+	Token_Macro,
+	Token_Type,
+};
+
+struct Lang_Token {
+	u32 source_offset;
+	u16 len;
+	Lang_TokeKind kind;
+};
+
+enum Lexer_State : u32 {
+	Lex_State_None,
+	Lex_State_InComment,
+};
+
+typedef big_array<Lang_Token> Token_List;
+
+typedef void (*Tokenize_Proc)(Lexer_State *state, string source, Token_List *tokens, u64 scan_start, u64 scan_end);
+
+funcdef void tokenize_source_code_cpp(Lexer_State *state, string source, Token_List *tokens, u64 scan_start, u64 scan_end);
+funcdef void tokenize_source_code_config(Lexer_State *state, string source, Token_List *tokens, u64 scan_start, u64 scan_end);
+
+////////////////////////
 // ~gaureesh @NOTE: buffer
 
 struct Line {
 	u64 index;
+	u64 token_begin;
+	u32 tokens_len;
+	Lexer_State lex_state;
 };
 
 typedef u64 Buffer_Flags;
@@ -535,17 +620,17 @@ struct Buffer {
 	string path;
 
 	list<u8> data;
-	list<Line> lines;
+	big_array<Line> line_tbl;
+	big_array<Lang_Token> tokens;
 
 	u64 cursor;
 	u64 desired_col;
-
-	Range_u64 selection;
 
 	// -- meta data --
 
 	Buffer_Flags flags;
 	OS_FileKind file_kind;
+	Tokenize_Proc tokenizer;
 
 	// -- view data --
 	
@@ -585,7 +670,8 @@ funcdef Buffer    *buffer_map_get(Buffer_Map *map, string path);
 funcdef bool       buffer_map_remove(Buffer_Map *map, string path);
 funcdef slice<string> buffer_map_get_paths(Buffer_Map *map, Arena *arena);
 
-funcdef void draw_buffer_view(Buffer *buffer, Quad rect);
+funcdef void draw_buffer_view(Buffer *buffer, Quad rect, bool is_active);
+
 
 ////////////////////////
 // ~gaureesh @NOTE: editor
@@ -609,16 +695,21 @@ enum Ed_CmdKind {
 	Cmd_Exit,
 	Cmd_Reload,
 
+	Cmd_Jump_To_EoF,
+	Cmd_Jump_To_Star_Of_Line,
+	Cmd_Jump_To_End_Of_Line,
+	Cmd_Jump_To_First_Non_White,
+
 	Cmd_In_Palette_End,
 
-
-
+	Cmd_Copy_Text,
 	Cmd_Mode_Change,
 	Cmd_Cursor_Move,
 	Cmd_Insert_String,
 	Cmd_Delete_String,
 	Cmd_Jump_To_Line,
 	Cmd_Workspace_Open,
+
 	Cmd_Count,
 };
 
@@ -636,9 +727,20 @@ struct Ed_Cmd {
 	slice<string> arg_strings;
 };
 
+typedef u32 Ed_KeymapFlags;
+enum Ed_KaymapFlag : Ed_KeymapFlags {
+	Keymap_Ctrl = 1 << 0,
+};
+
+struct Ed_Keymap {
+	Ed_KeymapFlags flags;
+	rune codepoint;
+};
 
 funcdef void ed_init();
 funcdef void ed_deinit();
+
+funcdef Range_u64 ed_get_selection_region();
 
 funcdef void ed_exec_command(Ed_Cmd command);
 funcdef string ed_command_string();
@@ -648,12 +750,10 @@ funcdef slice<string> ed_open_buffers();
 
 funcdef Ed_Mode ed_mode();
 funcdef Buffer *ed_active();
-funcdef string ed_directory();
+funcdef string  ed_directory();
 
 funcdef Arena *frame_arena();
 funcdef Arena *persist_arena();
-
-funcdef string  modal_string(Ed_Mode mode);
 
 // ~gauresesh @NOTE: commands
 
@@ -665,11 +765,18 @@ funcdef Ed_Cmd change_mode(Ed_Mode to);
 funcdef Ed_Cmd move_cursor(Direction dir, u64 count);
 funcdef Ed_Cmd insert_string(string str);
 funcdef Ed_Cmd delete_string(Direction dir, u64 count);
-funcdef Ed_Cmd jump_to_line(u64 line);
 funcdef Ed_Cmd reload_config();
+funcdef Ed_Cmd copy_selected();
+
+funcdef Ed_Cmd jump_to_line(u64 line);
+funcdef Ed_Cmd jump_to_eof();
+funcdef Ed_Cmd jump_to_start_of_line();
+funcdef Ed_Cmd jump_to_end_of_line();
+funcdef Ed_Cmd jump_to_first_non_white();
 
 funcdef string cmd_function(Ed_CmdKind kind);
-funcdef string get_config_dir();
+funcdef string modal_string(Ed_Mode mode);
+
 
 
 #endif

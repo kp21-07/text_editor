@@ -8,6 +8,9 @@
 #include "../editor.cpp"
 #include "../main.cpp"
 
+#include "../languages/c_plus_plus.cpp"
+#include "../languages/editor_script.cpp"
+
 #include "../vendor/glad.c"
 
 #if OS_Windows

@@ -2307,8 +2307,6 @@ RGFWDEF RGFW_ssize_t RGFW_readClipboardPtr(char* str, size_t strCapacity);
 RGFWDEF void RGFW_writeClipboard(const char* text, u32 textLen);
 /** @} */
 
-
-
 /** * @defgroup error handling
 * @{ */
 /**!

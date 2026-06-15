@@ -4,25 +4,73 @@
 #include <math.h>
 
 funcdef void
+buffer__build_tokens(Buffer *buffer, u64 from)
+{
+    u64 line_index = buffer_line_index_at(buffer, from);
+	Tokenize_Proc tokenizer = buffer->tokenizer;
+	if (!tokenizer)
+		return;
+
+    u64 scan_start  = 0;
+    Lexer_State state = Lex_State_None;
+
+    if (line_index > 0) {
+        Line& prev = buffer->line_tbl[line_index - 1];
+        scan_start = prev.index + 1;
+        state      = prev.lex_state;
+
+        u64 token_keep = prev.token_begin + prev.tokens_len;
+        big_array_pop(&buffer->tokens, token_keep);
+    } else {
+        big_array_pop(&buffer->tokens, 0);
+    }
+
+    string source = buffer->data.view();
+    u64 num_lines = buffer->line_tbl.len;
+
+    for (u64 i = line_index; i < num_lines; ++i) {
+        Line& line = buffer->line_tbl[i];
+
+        Range_u64 range;
+        range.begin = scan_start;
+        range.end   = line.index;
+
+        line.token_begin = buffer->tokens.len;
+        line.lex_state   = state;
+
+		tokenizer(&state, source, &buffer->tokens, range.begin, range.end);
+
+        line.tokens_len = (u32)(buffer->tokens.len - line.token_begin);
+
+        scan_start = line.index + 1;
+    }
+}
+
+funcdef void
 buffer__build_lines(Buffer *buffer, u64 from)
 {
     u64 line = buffer_line_index_at(buffer, from);
 
     u64 scan_start = 0;
     if (line > 0)
-        scan_start = buffer->lines[line - 1].index + 1;
+        scan_start = buffer->line_tbl[line - 1].index + 1;
 
-    buffer->lines.len = line;
+    big_array_pop(&buffer->line_tbl, line);
 
     string data = buffer->data.view();
 
     for (u64 i = scan_start; i < data.len; ++i)
     {
-        if (data[i] == '\n')
-            append(&buffer->lines, {i});
+        if (data[i] == '\n') {
+            Line l = {};
+            l.index = i;
+            big_array_push(&buffer->line_tbl, l);
+        }
     }
 
-    append(&buffer->lines, {data.len});
+    Line sentinel = {};
+    sentinel.index = data.len;
+    big_array_push(&buffer->line_tbl, sentinel);
 }
 
 funcdef void
@@ -68,17 +116,29 @@ buffer_init(Buffer *buffer, string path)
 	MemZeroStruct(buffer);
 
 	buffer->arena = arena_make(GB(1));
+	buffer->line_tbl = big_array_make<Line>(2000000);
+	buffer->tokens   = big_array_make<Lang_Token>(2000000);
 	buffer->path = path;
 
 	Load_Error err = Load_Ok;
 	{
 		OS_FileData file_data = os_file_data(path);
 		buffer->file_kind = file_data.kind;
+
+		switch (file_data.kind) {
+			case OS_FileKind::C:
+			case OS_FileKind::Cpp:    buffer->tokenizer = tokenize_source_code_cpp; break;
+
+			case OS_FileKind::Config: buffer->tokenizer = tokenize_source_code_config; break;
+			default: buffer->tokenizer = nullptr; break;
+		}
+
 		if (!Flag_Check(file_data.flags, File_Exists)) {
 
 			buffer->data = list_make(alloc_slice(buffer->arena, u8, KB(512)));
-			buffer->lines = list_make(alloc_slice(buffer->arena, Line, 2048));
+			// buffer->lines = list_make(alloc_slice(buffer->arena, Line, 2048));
 			buffer__build_lines(buffer, 0);
+			buffer__build_tokens(buffer, 0);
 			return Load_Invalid_Path;
 		}
 
@@ -88,8 +148,9 @@ buffer_init(Buffer *buffer, string path)
 
 		if (err != Load_Ok) {
 			buffer->data = list_make(alloc_slice(buffer->arena, u8, KB(512)));
-			buffer->lines = list_make(alloc_slice(buffer->arena, Line, 2048));
+			// buffer->lines = list_make(alloc_slice(buffer->arena, Line, 2048));
 			buffer__build_lines(buffer, 0);
+			buffer__build_tokens(buffer, 0);
 			return err;
 		}
 
@@ -101,10 +162,8 @@ buffer_init(Buffer *buffer, string path)
 	}
 
 	string buf_string = string_from_list(buffer->data);
-
-	u64 line_count = Max((string_count_lines(buf_string) * 2), 2048);
-	buffer->lines = list_make(alloc_slice(buffer->arena, Line, line_count));
 	buffer__build_lines(buffer, 0);
+	buffer__build_tokens(buffer, 0);
 
 	Flag_Set(buffer->flags, Buffer_Occupied);
 	return err;
@@ -115,6 +174,10 @@ funcdef void
 buffer_deinit(Buffer *buffer)
 {
 	arena_delete(buffer->arena);
+
+	big_array_delete(&buffer->line_tbl);
+	big_array_delete(&buffer->tokens);
+
 	MemZeroStruct(buffer);
 }
 
@@ -125,7 +188,7 @@ buffer_line_count(Buffer *buffer)
 	if (!buffer)
 		return 0;
 
-	return buffer->lines.len;
+	return buffer->line_tbl.len;
 }
 
 funcdef u64
@@ -134,7 +197,7 @@ buffer_line_index_at(Buffer *buffer, u64 buf_index)
 	if (!buffer)
 		return 0;
 
-	auto lines = buffer->lines.view();
+	auto lines = buffer->line_tbl.view();
 	u64 lower = 0;
 	u64 higher = lines.len;
 
@@ -156,17 +219,17 @@ buffer_line_range(Buffer *buffer, u64 line_index)
 {
 	if (!buffer) return {};
 
-	if (line_index >= buffer->lines.len) {
-		u64 begin = buffer->lines.len > 0
-			? buffer->lines[buffer->lines.len - 1].index + 1
+	if (line_index >= buffer->line_tbl.len) {
+		u64 begin = buffer->line_tbl.len > 0
+			? buffer->line_tbl[buffer->line_tbl.len - 1].index + 1
 			: 0;
 		return Range_u64 { begin, buffer->data.len };
 	}
 
-	u64 end = buffer->lines[line_index].index;
+	u64 end = buffer->line_tbl[line_index].index;
 	u64 begin = 0;
 	if (line_index != 0)
-		begin = buffer->lines[line_index - 1].index + 1;
+		begin = buffer->line_tbl[line_index - 1].index + 1;
 	return Range_u64 { begin, end };
 }
 
@@ -188,18 +251,13 @@ buffer_insert(Buffer *buffer, string s)
 		list_realloc(&buffer->data, required_size, buffer->arena);
 	}
 
-	u64 needed_lines_len = string_count_lines(s) + buffer->lines.len;
-	if (needed_lines_len > buffer->lines.capacity) {
-		u64 required_size = Max(buffer->lines.capacity * 2, needed_lines_len * 2);
-		list_realloc(&buffer->lines, required_size, buffer->arena);
-	}
-
 	u64 before_insert = buffer_cursor(buffer);
 	bytes insert_data = { (u8 *) s.raw, s.len };
 	insert_slice(&buffer->data, buffer->cursor, insert_data);
 	buffer->cursor += s.len;
 
 	buffer__build_lines(buffer, before_insert);
+	buffer__build_tokens(buffer, before_insert);
 	buffer__sync_desired_column(buffer);
 }
 
@@ -239,6 +297,7 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
 	buffer->data.len -= (end - start);
 
 	buffer__build_lines(buffer, start);
+	buffer__build_tokens(buffer, start);
 	buffer__sync_desired_column(buffer);
 	Flag_Set(buffer->flags, Buffer_Dirty);
 }
@@ -295,7 +354,7 @@ buffer_move_cursor(Buffer *buf, u64 amount, Direction dir)
 				line -= 1;
 			}
 			else {
-				if (line + 1 >= buf->lines.len)
+				if (line + 1 >= buf->line_tbl.len)
 					break;
 				line += 1;
 			}
@@ -442,32 +501,56 @@ buffer_map_get(Buffer_Map *map, string path)
 funcdef bool
 buffer_map_remove(Buffer_Map *map, string path)
 {
-	Temp t = temp_begin(scratch(0, 0));
-	defer(temp_end(t));
+    Temp t = temp_begin(scratch(0, 0));
+    defer(temp_end(t));
 
-	path = os_path_canonical(t.arena, path);
-	slice<Buffer> table = map->table;
-	u64 capacity = table.len;
-	u64 index = hash_string(path) % capacity;
+    path = os_path_canonical(t.arena, path);
+    slice<Buffer> table = map->table;
+    u64 capacity = table.len;
+    u64 index = hash_string(path) % capacity;
 
-	for (u64 i=0; i<capacity; ++i) {
-		Temp t2 = temp_begin(scratch(&t.arena, 1));
-		defer(temp_end(t2));
+    for (u64 i = 0; i < capacity; ++i) {
+        if (!Flag_Check(table[index].flags, Buffer_Occupied))
+            return false;
 
-		if (!Flag_Check(table[index].flags, Buffer_Occupied))
-			return false;
+        Temp t2 = temp_begin(scratch(&t.arena, 1));
+        string path2 = os_path_canonical(t2.arena, table[index].path);
+        temp_end(t2);
 
+        if (string_equal(path2, path))
+            break;
 
-		string path2 = os_path_canonical(t2.arena, table[index].path);
-		if (string_equal(path2, path)) {
-			buffer_deinit(&table[index]); // clears flags too
-		}
+        index = (index + 1) % capacity;
+    }
 
-		map->count -= 1;
-		index = (index + 1) % capacity;
-	}
+    buffer_deinit(&table[index]);
+    map->count -= 1;
 
-	return false;
+    u64 empty = index;
+    u64 scan  = (index + 1) % capacity;
+
+    while (Flag_Check(table[scan].flags, Buffer_Occupied)) {
+        Temp t2 = temp_begin(scratch(&t.arena, 1));
+        string scan_path = os_path_canonical(t2.arena, table[scan].path);
+        u64 natural = hash_string(scan_path) % capacity;
+        temp_end(t2);
+
+        bool needs_shift =
+            (empty <= scan)
+                ? (natural <= empty || natural > scan)
+                : (natural <= empty && natural > scan);
+
+        if (needs_shift) {
+            table[empty] = table[scan];
+            buffer_deinit(&table[scan]);
+            Flag_Set(table[empty].flags, Buffer_Occupied);
+            MemZeroStruct(&table[scan]);
+            empty = scan;
+        }
+        scan = (scan + 1) % capacity;
+    }
+
+    return true;
 }
 
 funcdef slice<string>
@@ -488,11 +571,73 @@ buffer_map_get_paths(Buffer_Map *map, Arena *arena)
 /////////////////////////////////////
 
 
+funcdef vec4
+draw_line(string source, string line, u64 line_start, slice<const Lang_Token> tokens, vec2 pos)
+{
+	vec4 bounds = {};
+	f32  x      = pos.x;
+
+	u64 i = 0;
+
+	for (u64 t = 0; t < tokens.len; t++) {
+		Lang_Token tok = tokens[t];
+
+		u64 tok_start = tok.source_offset - line_start;
+		u64 tok_end   = tok_start + tok.len;
+
+		// draw any unstyled gap before this token
+		if (tok_start > i) {
+			string gap = line.range(i, tok_start);
+			vec4 b = gfx_draw_text(gap, {x, pos.y}, cfg_color(foreground));
+			x      += b.z;
+			bounds  = b;
+		}
+
+		vec4 color;
+		switch (tok.kind) {
+			case Token_Keyword:    color = cfg_color(keyword);    break;
+			case Token_String:     color = cfg_color(string);     break;
+			case Token_Number:     color = cfg_color(number);     break;
+			case Token_Comment:    color = cfg_color(comment);    break;
+			case Token_Macro:      color = cfg_color(macro);      break;
+			case Token_Identifier: color = cfg_color(foreground); break;
+			case Token_Symbol:     color = cfg_color(operator);   break;
+			case Token_Type:       color = cfg_color(type);       break;
+			default:               color = cfg_color(foreground); break;
+		}
+
+		u64 clipped_start = tok_start;
+		u64 clipped_end   = Min(tok_end, line.len);
+
+		if (clipped_start < clipped_end) {
+			string text = line.range(clipped_start, clipped_end);
+			vec4 b = gfx_draw_text(text, {x, pos.y}, color);
+			x      += b.z;
+			bounds  = b;
+		}
+
+		i = Min(tok_end, line.len);
+
+		if (i >= line.len)
+			break;
+	}
+
+	if (i < line.len) {
+		string tail = line.range(i, line.len);
+		vec4 b = gfx_draw_text(tail, {x, pos.y}, cfg_color(foreground));
+		bounds = b;
+	}
+
+	return bounds;
+}
+
 funcdef void
-draw_buffer_view(Buffer *buffer, Quad rect)
+draw_buffer_view(Buffer *buffer, Quad rect, bool is_active)
 {
 	gfx_push_clip(rect);
 	defer(gfx_pop_clip());
+
+	Range_u64 sel = ed_get_selection_region();
 
 	if (!buffer) {
 		vec2 dim = gfx_measure_text(S(" no file "));
@@ -508,7 +653,7 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 	f32 space_width = char_pixels(' ');
 
 	string buf_string = buffer->data.view();
-	auto lines = buffer->lines.view();
+	auto lines = buffer->line_tbl.view();
 
 	u64 cursor_line = buffer_line_index_at(buffer, buffer->cursor);
 	Range_u64 cursor_range = buffer_line_range(buffer, cursor_line);
@@ -528,13 +673,6 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 
 	f32 max_scroll = Max(lines.len * line_h - rect.size.y, 0);
 	buffer->target_scroll_y = Clamp(buffer->target_scroll_y, 0, max_scroll);
-
-	// buffer->scroll_y = Lerp(
-	// 	buffer->scroll_y,
-	// 	buffer->target_scroll_y,
-	// 	1.0f - expf(-20.0f * delta_time())
-	// );
-
 	buffer->scroll_y = buffer->target_scroll_y;
 
 	// gutter
@@ -591,17 +729,34 @@ draw_buffer_view(Buffer *buffer, Quad rect)
 			);
 		}
 
+		u64 sel_begin = Max(sel.begin, range.begin);
+		u64 sel_end   = Min(sel.end,   range.end);
+
+		if (sel_begin < sel_end && is_active) {
+			u64 local_begin = sel_begin - range.begin;
+			u64 local_end   = sel_end   - range.begin;
+
+			string before = line.range(0, local_begin);
+			string middle = line.range(local_begin, local_end);
+
+			f32 x0 = text_x + gfx_measure_text(before).x;
+			f32 x1 = x0     + gfx_measure_text(middle).x;
+
+			gfx_draw_quad({ x0, y, x1 - x0, line_h }, {}, cfg_color(selection), cfg_f32(radius));
+		}
+
 		gfx_draw_text(
 			line_number,
 			{rect.from.x + gutter_pad, y},
 			current_line ? cfg_color(gutter_foreground) : cfg_color(gutter)
 		);
 
-		vec4 rect = gfx_draw_text(
-			line,
-			{text_x, y},
-			cfg_color(foreground)
-		);
+		Line&          line_entry = buffer->line_tbl[i];
+		u64 tok_begin = line_entry.token_begin;
+		u64 tok_end   = tok_begin + line_entry.tokens_len;
+		auto tok_slice = buffer->tokens.view().range(tok_begin, tok_end);
+
+		vec4 rect = draw_line(buf_string, line, range.begin, tok_slice, {text_x, y});
 
 		vec2 size = { rect.z, rect.w };
 

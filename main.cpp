@@ -30,107 +30,64 @@ void entry_point(slice<string> args)
 		OS_Input input = os_prepare_frame(win);
 		Ed_Mode curr_mode = ed_mode();
 
-		if (curr_mode == Ed_Mode::Normal) {
-			Ed_Cmd cmd = {};
-			switch (input.codepoint) {
-				case ':':  cmd = change_mode(Ed_Mode::Command); break;
-				case 'i':  cmd = change_mode(Ed_Mode::Insert); break;
-				case '\t': cmd = change_mode(Ed_Mode::Buffer_Search); break;
-				case 'v':  cmd = change_mode(Ed_Mode::Visual); break;
+		rune input_rune = input.codepoint;
 
-				case 'h': cmd = move_cursor(Direction::Left, 1); break;
-				case 'j': cmd = move_cursor(Direction::Down, 1); break;
-				case 'k': cmd = move_cursor(Direction::Up, 1); break;
-				case 'l': cmd = move_cursor(Direction::Right, 1); break;
+		Ed_Cmd cmd = {};
 
-				case 'J': cmd = move_cursor(Direction::Down, 10); break;
-				case 'K': cmd = move_cursor(Direction::Up, 10); break;
-				
-				case 'G': {
-					Buffer *active = ed_active();
-					u64 line_idx = buffer_line_count(active);
-					cmd = jump_to_line(line_idx);
-				} break;
+		if (curr_mode == Ed_Mode::Normal || curr_mode == Ed_Mode::Visual) {
+			if      (input_rune == key_map(insert_mode))        cmd = change_mode(Ed_Mode::Insert);
+			else if (input_rune == key_map(buffer_search_mode)) cmd = change_mode(Ed_Mode::Buffer_Search);
+			else if (input_rune == key_map(visual_mode))        cmd = change_mode(Ed_Mode::Visual);
+			else if (input_rune == key_map(command_mode))       cmd = change_mode(Ed_Mode::Command);
 
-				case '0': {
-					Buffer *active = ed_active();
-					u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
-					auto range = buffer_line_range(active, line_index);
-					cmd = move_cursor(Direction::Absolute, range.begin);
-				} break;
+			else if (input_rune == key_map(cursor_left))  cmd = move_cursor(Direction::Left, 1);
+			else if (input_rune == key_map(cursor_down))  cmd = move_cursor(Direction::Down, 1);
+			else if (input_rune == key_map(cursor_up))    cmd = move_cursor(Direction::Up, 1);
+			else if (input_rune == key_map(cursor_right)) cmd = move_cursor(Direction::Right, 1);
+			
+			else if (input_rune == key_map(scroll_down))  cmd = move_cursor(Direction::Down, 12);
+			else if (input_rune == key_map(scroll_up))    cmd = move_cursor(Direction::Up, 12);
+	
+			else if (input_rune == key_map(jump_to_end_of_file)) cmd = jump_to_eof();
+			else if (input_rune == key_map(jump_to_start_of_line)) cmd = jump_to_start_of_line();
 
-				case '$': case 'A': {
-					Buffer *active = ed_active();
-					u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
-					auto range = buffer_line_range(active, line_index);
-					cmd = move_cursor(Direction::Absolute, range.end);
+			else if (input_rune == key_map(increase_font_size)) gfx_set_font_height(gfx_get_font_height() + 2);
+			else if (input_rune == key_map(decrease_font_size)) gfx_set_font_height(gfx_get_font_height() - 2);
+			else if (input_rune == key_map(paste_text)) cmd = insert_string(os_get_clipboard_string(frame_arena()));
 
-					if (input.codepoint == 'A') {
-						ed_exec_command(cmd);
-						cmd = change_mode(Ed_Mode::Insert);
-					}
-				} break;
-
-				case '_': case 'I':
-				{
-					Buffer *active = ed_active();
-					u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
-					auto range = buffer_line_range(active, line_index);
-					string line = buffer_slice(active, frame_arena(), range);
-
-					u64 i=0;
-					for (;i<line.len && is_space(line[i]); ++i)
-						;
-
-					cmd = move_cursor(Direction::Absolute, range.begin + i);
-					if (input.codepoint == 'I') {
-						ed_exec_command(cmd);
-						cmd = change_mode(Ed_Mode::Insert);
-					}
-				} break;
-
-				case 'L': {
-				} break;
-
-				case '-': {
-					f32 curr_height = gfx_get_font_height();
-					gfx_set_font_height(curr_height - 2);
-				} break;
-
-				case '+' : {
-					f32 curr_height = gfx_get_font_height();
-					gfx_set_font_height(curr_height + 2);
-				} break;
+			else if (
+				input_rune == key_map(jump_to_end_of_line) ||
+				input_rune == key_map(insert_at_end_of_line)
+			) {
+				cmd = jump_to_end_of_line();
+				if (input_rune == key_map(insert_at_end_of_line)) {
+					ed_exec_command(cmd);
+					cmd = change_mode(Ed_Mode::Insert);
+				}
 			}
-
-			ed_exec_command(cmd);
-		} else if (curr_mode == Ed_Mode::Buffer_Search) {
-			switch (input.codepoint) {
-			case '\x1b': {
-				ed_exec_command(change_mode(Ed_Mode::Normal));
-			} break;
-
-			case '\x7F': case '\b': { // delete
-				Ed_Cmd cmd = delete_string(Direction::Left, 1);
-				ed_exec_command(cmd);
-			} break;
-
-			case '\t': {
+			else if (
+				input_rune == key_map(jump_to_first_non_white) ||
+				input_rune == key_map(insert_at_first_non_white)
+			) {
+				cmd = jump_to_first_non_white();
+				if (input_rune == key_map(insert_at_first_non_white)) {
+					ed_exec_command(cmd);
+					cmd = change_mode(Ed_Mode::Insert);
+				}
+			}
+		}
+		else if (curr_mode == Ed_Mode::Buffer_Search) {
+			if      (input_rune == '\x7F' || input_rune == '\b') cmd = delete_string(Direction::Left, 1);
+			else if (input_rune == key_map(autocomplete)) {
 				string cmd_string = ed_command_string();
 				slice<string> paths = ed_open_buffers();
 				paths = fuzzy_filter(paths, cmd_string, frame_arena());
-
 				if (paths.len > 0) {
-					Ed_Cmd cmd = delete_string(Direction::Left, cmd_string.len);
-					ed_exec_command(cmd);
-
+					ed_exec_command(delete_string(Direction::Left, cmd_string.len));
 					cmd = insert_string(paths[0]);
-					ed_exec_command(cmd);
 				}
-			} break;
-			case '\n': {
-				Ed_Cmd cmd = {};
-
+			}
+			else if (input_rune == key_map(ui_confirm)) {
 				string cmd_string = ed_command_string();
 				slice<string> paths = ed_open_buffers();
 				paths = fuzzy_filter(paths, cmd_string, frame_arena());
@@ -141,99 +98,66 @@ void entry_point(slice<string> args)
 				}
 
 				cmd = change_mode(Ed_Mode::Normal);
+			}
+			else if (unicode_visual_rune(input_rune)) cmd = insert_string(utf8_encode(input.codepoint, frame_arena()));
+		}
+		else if (curr_mode == Ed_Mode::Command) {
+			if      (input_rune == '\x7F' || input_rune == '\b') cmd = delete_string(Direction::Left, 1);
+			else if (input_rune == key_map(ui_confirm)) {
+				Temp t0 = temp_begin(scratch(0, 0));
+				defer(temp_end(t0));
+
+				slice<string> args = ed_command_strings(t0.arena);
+
+				Ed_Cmd cmd = parse_command(args);
 				ed_exec_command(cmd);
-			} break;
+				if (cmd.kind == Cmd_Reload) {
+					gfx_set_font_height(cfg_f32(font_height));
+				}
 
-			default: {
-				if (!unicode_visual_rune(input.codepoint))
-					break;
-
-				Ed_Cmd cmd = insert_string(
-					utf8_encode(input.codepoint, frame_arena())
-				);
+				cmd = change_mode(Ed_Mode::Normal);
 				ed_exec_command(cmd);
-			} break;
-			}
-		} else if (curr_mode == Ed_Mode::Command) {
-			switch (input.codepoint) {
-				case '\x1b': {
-					Ed_Cmd cmd = change_mode(Ed_Mode::Normal);
+			}	
+			else if (unicode_visual_rune(input_rune)) cmd = insert_string(utf8_encode(input.codepoint, frame_arena()));
+		}
+		else if (curr_mode == Ed_Mode::Insert) {
+			if      (input_rune == '\x7F') cmd = delete_string(Direction::Right, 1);
+			else if (input_rune == '\b')   cmd = delete_string(Direction::Left, 1);
+			else if (unicode_visual_rune(input_rune) ||
+					input_rune == '\n' ||
+					input_rune == '\t') 
+			{
+				Ed_Cmd post = {};
+				string fmt = format_user_input(input.codepoint, &post);
+				if (fmt.len) {
+					cmd = insert_string(fmt);
 					ed_exec_command(cmd);
-				} break;
-
-				case '\x7F': case '\b': { // delete
-					Ed_Cmd cmd = delete_string(Direction::Left, 1);
-					ed_exec_command(cmd);
-				} break;
-
-				case '\n': {
-					Temp t0 = temp_begin(scratch(0, 0));
-					defer(temp_end(t0));
-
-					slice<string> args = ed_command_strings(t0.arena);
-
-					Ed_Cmd cmd = parse_command(args);
-					ed_exec_command(cmd);
-					if (cmd.kind == Cmd_Reload) {
-						gfx_set_font_height(cfg_f32(font_height));
-					}
-
-					cmd = change_mode(Ed_Mode::Normal);
-					ed_exec_command(cmd);
-				} break;
-
-				default: {
-					if (!unicode_visual_rune(input.codepoint))
-						break;
-
-					Ed_Cmd cmd = insert_string(
-						utf8_encode(input.codepoint, frame_arena())
-					);
-					ed_exec_command(cmd);
-				} break;
-			}
-		}else if (curr_mode == Ed_Mode::Insert) {
-			switch (input.codepoint) {
-				case '\x1b': { // escape
-					Ed_Cmd cmd = change_mode(Ed_Mode::Normal);
-					ed_exec_command(cmd);
-				} break;
-
-				case '\x7F': { // delete
-					Ed_Cmd cmd = delete_string(Direction::Right, 1);
-					ed_exec_command(cmd);
-				} break;
-
-				case '\b': { // backspace
-					Ed_Cmd cmd = delete_string(Direction::Left, 1);
-					ed_exec_command(cmd);
-				} break;
-
-				default: {
-					Ed_Cmd post = {};
-					string fmt = format_user_input(input.codepoint, &post);
-					if (fmt.len) {
-						Ed_Cmd cmd = insert_string(fmt);
-						ed_exec_command(cmd);
-					}
-					ed_exec_command(post);
-				} break;
-			}
-		} else if (curr_mode == Ed_Mode::Visual) {
-			switch (input.codepoint) {
-				case '\x1b': {
-					Ed_Cmd cmd = change_mode(Ed_Mode::Normal);
-					ed_exec_command(cmd);
-				} break;
+					cmd = {};
+				}
+				ed_exec_command(post);
 			}
 		}
+		else if (curr_mode == Ed_Mode::Visual) {
+			if   (input_rune == key_map(cursor_left))  cmd = move_cursor(Direction::Left, 1);
+			else if (input_rune == key_map(cursor_down))  cmd = move_cursor(Direction::Down, 1);
+			else if (input_rune == key_map(cursor_up))    cmd = move_cursor(Direction::Up, 1);
+			else if (input_rune == key_map(cursor_right)) cmd = move_cursor(Direction::Right, 1);
+			else if (input_rune == key_map(copy_text)) {
+				cmd = copy_selected();
+				ed_exec_command(cmd);
+				cmd = change_mode(Ed_Mode::Normal);
+			}
+		}
+		if (!cmd.kind) {
+			if (input_rune == key_map(normal_mode)) cmd = change_mode(Ed_Mode::Normal);
+		}
+		ed_exec_command(cmd);
 
 		ivec2 win_size = os_window_size(win);
 		Quad window_rect = {
 			{ 0, 0 },
 			{ (f32) win_size.x, (f32) win_size.y }
 		};
-
 
 		gfx_begin();
 	
@@ -253,7 +177,6 @@ void entry_point(slice<string> args)
 		gfx_end();
 	}
 }
-
 
 funcdef string
 format_user_input(rune codepoint, Ed_Cmd *post)
@@ -406,7 +329,7 @@ layout_editor_ui(Quad window)
 	status.size = {size_fill(1.0), size_fit()};
 	status.layout = Layout_Row;
 	status.padding = Pad(4);
-	status.gap = 4.0;
+	status.gap = 8.0;
 
 	Ed_Mode mode = ed_mode();
 
@@ -430,7 +353,7 @@ layout_editor_ui(Quad window)
 
 	ui_end_frame();
 	
-	draw_buffer_view(ed_active(), panel_box->rect);
+	draw_buffer_view(ed_active(), panel_box->rect, true && ed_mode() == Ed_Mode::Visual);
 
 	ui_draw();
 }
@@ -527,10 +450,6 @@ layout_buffer_search_ui(Quad window)
 			cursor.fill_color = cfg_color(cursor);
 
 			UI(cursor);
-
-			if (paths.len > 0 && cmd_string.len > 0) {
-				UI(label(paths[0].range(cmd_string.len, paths[0].len), cfg_color(status_line)));
-			}
 		}
 
 		//

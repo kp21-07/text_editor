@@ -128,6 +128,9 @@ string_to_f32(string s, bool *ok)
 funcdef string
 string_strip(string s)
 {
+	if (!s.len)
+		return S("");
+
 	u64 begin = 0;
 	u64 end = s.len;
 
@@ -291,11 +294,16 @@ string_count_lines(string s)
 {
 	if (s.len == 0) return 0;
 
-	u64 count = 0;
-	for (u64 i=0; i<s.len; ++i) {
+	u64 count = 1;
+
+	for (u64 i = 0; i < s.len; ++i) {
 		if (s[i] == '\n') count += 1;
 	}
-	if (s[s.len-1] != '\n') count += 1;
+
+	if (s[s.len - 1] == '\n') {
+		count -= 1;
+	}
+
 	return count;
 }
 
@@ -307,14 +315,22 @@ string_to_lines(Arena *arena, string origin)
 
 	u64 prev  = 0;
 	u64 count = 0;
-	for (u64 i=0; i<origin.len; ++i) {
+
+	for (u64 i = 0; i < origin.len; ++i)
+	{
 		if (origin[i] == '\n')
 		{
-			lines[count] = origin.range(prev, i);
+			lines[count++] = origin.range(prev, i);
 			prev = i + 1;
-			count += 1;
 		}
 	}
+
+	if (origin.len > 0 && origin[origin.len - 1] != '\n')
+	{
+		lines[count++] = origin.range(prev, origin.len);
+	}
+
+	assert(count == line_count);
 
 	return lines;
 }
@@ -356,6 +372,15 @@ string_equal(string a, string b)
 	if (a.raw == b.raw) return true;
 
 	return memcmp(a.raw, b.raw, a.len) == 0;
+}
+
+funcdef bool
+string_starts_with(string original, string pattern)
+{
+	if (original.len < pattern.len) 
+		return false;
+
+	return string_equal(original.range(0, pattern.len), pattern);
 }
 
 

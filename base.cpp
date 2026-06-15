@@ -105,26 +105,85 @@ fuzzy_filter(slice<string> src, string key, Arena *arena)
 {
 	if (!src.len)
 		return {};
-
 	if (!key.len)
 		return src;
 
 	list<string> matches = list_make(alloc_slice(arena, string, src.len));
 
-	// implementation
-	for (u64 i=0; i<src.len; ++i) {
-		string itr = src[i];
+	u8    key_lower[256];
+	u64   key_mask = 0;
 
+	for (u64 k = 0; k < key.len; ++k) {
+		u8 c = key[k] | 0x20;
+		key_lower[k] = c;
+		key_mask |= (1ULL << (c & 63));
+	}
+
+	for (u64 i = 0; i < src.len; ++i) {
+		string itr = src[i];
 		if (itr.len < key.len)
 			continue;
 
-		if (string_equal(itr.range(0,key.len), key)){
-			append(&matches, itr);
+		u64 itr_mask = 0;
+		for (u64 j = 0; j < itr.len; ++j)
+			itr_mask |= (1ULL << ((itr[j] | 0x20) & 63));
+		if ((itr_mask & key_mask) != key_mask)
+			continue;
+
+		u64 ki = 0;
+		for (u64 j = 0; j < itr.len && ki < key.len; ++j) {
+			u8 c = itr[j] | 0x20;
+			if (c == key_lower[ki])
+				++ki;
 		}
+		if (ki == key.len)
+			append(&matches, itr);
 	}
 
-	return slice<string> {
-		matches.raw,
-		matches.len
-	};
+	return slice<string> { matches.raw, matches.len };
+}
+
+////////////////
+// big array
+
+template<typename T> funcdef big_array<T>
+big_array_make(u64 capacity)
+{
+	big_array<T> result = {};
+
+	u64 reserve = Align_Up_Power_2(sizeof(Arena), alignof(T));
+	reserve += capacity * sizeof(T);
+
+	result.arena = arena_make(reserve);
+	result.len   = 0;
+
+	return result;
+}
+
+template<typename T> funcdef void
+big_array_delete(big_array<T> *array)
+{
+	arena_delete(array->arena);
+	*array = {};
+}
+
+
+template<typename T> funcdef void
+big_array_push(big_array<T> *array, T value)
+{
+	T *slot = alloc_struct(array->arena, T);
+	*slot = value;
+	array->len += 1;
+}
+
+template<typename T> funcdef void
+big_array_pop(big_array<T> *array, u64 index)
+{
+    assert(index <= array->len);
+
+    u64 offset = Align_Up_Power_2(sizeof(Arena), alignof(T));
+
+    array->len = index;
+
+    array->arena->used = offset + index * sizeof(T);
 }

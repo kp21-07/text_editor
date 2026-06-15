@@ -91,7 +91,10 @@ os_prepare_frame(OS_Handle window)
 
 			case RGFW_keyChar: {
 				RGFW_keyCharEvent k = event.keyChar;
-				if (!unicode_visual_rune(k.value)) break;
+
+				// if (!unicode_visual_rune(k.value))
+				// 	break;
+
 				input.codepoint = k.value;
 				break;
 			}
@@ -223,4 +226,23 @@ file_kind_string(OS_FileKind kind)
 	default:
 		return S("<Unknown>");
 	}
+}
+
+funcdef string
+os_get_clipboard_string(Arena *arena)
+{
+	u64 required = RGFW_readClipboardPtr(nullptr, 0);
+	if (required == 0)
+		return S("");
+
+	bytes data = alloc_slice(arena, u8, required);
+	RGFW_readClipboardPtr((char *)&data[0], data.len);
+
+	return string_from_bytes(data);
+}
+
+funcdef void
+os_set_clipboard_string(string str)
+{
+	RGFW_writeClipboard((char *) str.raw, str.len);
 }

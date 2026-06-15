@@ -15,20 +15,68 @@ global struct {
 	list<u8> cmd_string;
 	Buffer_Map buffer_map;
 
-
 	slice<string> open_buffers;
+	u64           ui_select_index;
+
+	Range_u64     yank_region;
 
 } ed_ctx;
 
+funcdef Ed_Keymap
+ed__string_to_keymap(string s, bool *ok)
+{
+	Ed_Keymap map = {};
+	s = string_strip(s);
+
+	if (ok)
+		*ok = false;
+
+	if (s.len == 0)
+		return map;
+
+	if (string_starts_with(s, S("Ctrl+")))
+	{
+		map.flags |= Keymap_Ctrl;
+		s = s.range(5, s.len);
+	}
+
+	if (string_equal(s, S("Tab")))
+		map.codepoint = '\t';
+	else if (string_equal(s, S("Esc")))
+		map.codepoint = 27;
+	else if (string_equal(s, S("Space")))
+		map.codepoint = ' ';
+	else if (string_equal(s, S("Backspace")))
+		map.codepoint = '\b';
+	else if (string_equal(s, S("Return")))
+		map.codepoint = '\n';
+	else {
+		int width = 0;
+		rune r = utf8_decode(s, &width);
+
+		if ((u64) width != s.len) {
+			return map;
+		}
+		map.codepoint = r;
+	}
+
+	if (ok)
+		*ok = true;
+
+	return map;
+}
 
 funcdef void
-ed__load_config_file(string path)
+ed__load_config_file()
 {
 	Temp t1 = temp_begin(scratch(0, 0));
 	defer(temp_end(t1));
 
+	string exec_path = os_get_exec_directory(t1.arena);
+	string config_path = string_concat(t1.arena, exec_path, S("/config.data"));
+
 	string data = string_from_bytes(
-		os_load_entire_file(t1.arena, path)
+		os_load_entire_file(t1.arena, config_path)
 	);
 
 	slice<string> lines = string_to_lines(t1.arena, data);
@@ -61,6 +109,7 @@ ed__load_config_file(string path)
 #define parse_cfg_f32(name, cond)   parse_cfg_value(#name, f32,  string_to_f32,   f32,  name, cond)
 #define parse_cfg_s32(name, cond)   parse_cfg_value(#name, u32,  string_to_s32,   s32,  name, cond)
 #define parse_cfg_color(name)       parse_cfg_value(#name, color, string_to_color, vec4, name, true)
+#define parse_cfg_keymap(name)      parse_cfg_value(#name, keymap, ed__string_to_keymap, Ed_Keymap, name, true)
 
 		if (false) {}
 		parse_cfg_f32(font_height, v > 5.0f)
@@ -108,6 +157,37 @@ ed__load_config_file(string path)
 		parse_cfg_color(bracket_match)
 		parse_cfg_color(indent_guide)
 
+		parse_cfg_keymap(command_mode)
+		parse_cfg_keymap(insert_mode)
+		parse_cfg_keymap(buffer_search_mode)
+		parse_cfg_keymap(normal_mode)
+		parse_cfg_keymap(visual_mode)
+
+		parse_cfg_keymap(cursor_left)
+		parse_cfg_keymap(cursor_down)
+		parse_cfg_keymap(cursor_up)
+		parse_cfg_keymap(cursor_right)
+
+		parse_cfg_keymap(scroll_down)
+		parse_cfg_keymap(scroll_up)
+
+		parse_cfg_keymap(jump_to_end_of_file)
+		parse_cfg_keymap(jump_to_start_of_line)
+		parse_cfg_keymap(jump_to_end_of_line)
+		parse_cfg_keymap(jump_to_first_non_white)
+
+		parse_cfg_keymap(insert_at_end_of_line)
+		parse_cfg_keymap(insert_at_first_non_white)
+
+		parse_cfg_keymap(increase_font_size)
+		parse_cfg_keymap(decrease_font_size)
+
+		parse_cfg_keymap(copy_text)
+		parse_cfg_keymap(paste_text)
+
+		parse_cfg_keymap(autocomplete)
+		parse_cfg_keymap(ui_confirm)
+
 		else {}
 
 #undef parse_cfg_value
@@ -141,7 +221,7 @@ ed_init()
 	// fallback config
 
 	cfg_f32(font_height) = 24.0f;
-	cfg_f32(radius)      = 6.0f;
+	cfg_f32(radius)      = 8.0f;
 	cfg_u32(tab_width)   = 2;
 
 	cfg_color(background) = color(0x1E2326FF);
@@ -149,7 +229,7 @@ ed_init()
 	cfg_color(background_dim) = color(0x272E33FF);
 	cfg_color(cursor) = color(0xA7C080AA);
 	cfg_color(cursor_text) = color(0x1A1A1AFF);
-	cfg_color(selection) = color(0xA7C08022);
+	cfg_color(selection) = color(0x7FBBB344);
 	cfg_color(line_highlight) = color(0x2C4841FF);
 	cfg_color(current_line) = color(0x2D3539FF);
 	cfg_color(gutter) = color(0x7A8478FF);
@@ -175,10 +255,41 @@ ed_init()
 	cfg_color(bracket_match) = color(0xFCEDFC26);
 	cfg_color(indent_guide) = color(0xFCEDFC26);
 
+	cfg_keymap(command_mode)       = Ed_Keymap { 0, ':' };
+	cfg_keymap(insert_mode)        = Ed_Keymap { 0, 'i' };
+	cfg_keymap(buffer_search_mode) = Ed_Keymap { 0, '\t' };
+	cfg_keymap(normal_mode)        = Ed_Keymap { 0, '\x1b' };
+	cfg_keymap(visual_mode)        = Ed_Keymap { 0, 'v' };
+
+	cfg_keymap(cursor_up)    = Ed_Keymap { 0, 'k' };
+	cfg_keymap(cursor_down)  = Ed_Keymap { 0, 'j' };
+	cfg_keymap(cursor_right) = Ed_Keymap { 0, 'l' };
+	cfg_keymap(cursor_left)  = Ed_Keymap { 0, 'h' };
+
+	cfg_keymap(scroll_up)   = Ed_Keymap { 0, 'K' };
+	cfg_keymap(scroll_down) = Ed_Keymap { 0, 'J' };
+
+	cfg_keymap(jump_to_end_of_file)   = Ed_Keymap { 0, 'G' };
+	cfg_keymap(jump_to_start_of_line) = Ed_Keymap { 0, '0' };
+	cfg_keymap(jump_to_end_of_line)     = Ed_Keymap { 0, '$' };
+	cfg_keymap(jump_to_first_non_white) = Ed_Keymap { 0, '_' };
+
+	cfg_keymap(insert_at_end_of_line)     = Ed_Keymap { 0, 'A' };
+	cfg_keymap(insert_at_first_non_white) = Ed_Keymap { 0, 'I' };
+
+	cfg_keymap(copy_text)  = Ed_Keymap { 0, 'y' };
+	cfg_keymap(paste_text) = Ed_Keymap { 0, 'p' };
+
+	cfg_keymap(increase_font_size) = Ed_Keymap { 0, '+' };
+	cfg_keymap(decrease_font_size) = Ed_Keymap { 0, '-' };
+
+	cfg_keymap(autocomplete) = Ed_Keymap { 0, '\t' };
+	cfg_keymap(ui_confirm) = Ed_Keymap { 0, '\n' };
+
 	/////////////
 
 	ed__init_workspace();
-	ed__load_config_file(S("./config.data"));
+	ed__load_config_file();
 }
 
 funcdef void
@@ -246,6 +357,18 @@ ed_open_buffers()
 	}
 
 	return ed_ctx.open_buffers;
+}
+
+funcdef Range_u64
+ed_get_selection_region()
+{
+    u64 a = ed_ctx.yank_region.begin;
+    u64 b = ed_ctx.yank_region.end;
+
+    if (a <= b)
+        return { a, b + 1 };
+
+    return { b, a + 1 };
 }
 
 funcdef void
@@ -332,15 +455,22 @@ ed_exec_command(Ed_Cmd cmd)
         } break;
 
 		case Cmd_Mode_Change: {
-			arena_free(ed_ctx.modal_arena);	
+			Range_u64 sel = ed_get_selection_region();
+
 			ed_ctx.open_buffers = {};
 			ed_ctx.cmd_string = {};
-			ed_ctx.mode = cmd.arg_mode;
+			ed_ctx.ui_select_index = 0;
+			ed_ctx.yank_region = {};
 
 			switch(cmd.arg_mode) {
 			case Ed_Mode::Insert:
 				if (ed_active() == nullptr)
 					return;
+
+				if (ed_ctx.mode == Ed_Mode::Visual) {
+					ed_exec_command(move_cursor(Direction::Absolute, sel.begin));
+					ed_exec_command(delete_string(Direction::Right, sel.end - sel.begin));
+				}
 			break;
 
 			case Ed_Mode::Command:
@@ -356,13 +486,66 @@ ed_exec_command(Ed_Cmd cmd)
 					alloc_slice(ed_ctx.modal_arena, u8, 128)
 				);
 			break;
-			default: break;
+
+			case Ed_Mode::Visual:
+			{
+				u64 cursor = buffer_cursor(ed_active());
+				ed_ctx.yank_region = { cursor, cursor };
+			} break;
+
+			default:
+			break;
 			}
+
+			ed_ctx.mode = cmd.arg_mode;
+			arena_free(ed_ctx.modal_arena);	
+		} break;
+
+		case Cmd_Jump_To_EoF:
+		{
+			Buffer *active = ed_active();
+			u64 line_idx = buffer_line_count(active);
+			ed_exec_command(jump_to_line(line_idx));
+		} break;
+
+		case Cmd_Jump_To_Star_Of_Line:
+		{
+			Buffer *active = ed_active();
+			u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
+			auto range = buffer_line_range(active, line_index);
+			ed_exec_command(move_cursor(Direction::Absolute, range.begin));
+		} break;
+
+		case Cmd_Jump_To_End_Of_Line:
+		{
+			Buffer *active = ed_active();
+			u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
+			auto range = buffer_line_range(active, line_index);
+			ed_exec_command(move_cursor(Direction::Absolute, range.end));
+		} break;
+
+		case Cmd_Jump_To_First_Non_White:
+		{
+			Buffer *active = ed_active();
+			u64 line_index = buffer_line_index_at(active, buffer_cursor(active));
+			auto range = buffer_line_range(active, line_index);
+			string line = buffer_slice(active, frame_arena(), range);
+
+			u64 i=0;
+			for (;i<line.len && is_space(line[i]); ++i)
+				;
+
+			ed_exec_command(move_cursor(Direction::Absolute, range.begin + i));
 		} break;
 
 		case Cmd_Cursor_Move:
+		{
 			buffer_move_cursor(ed_ctx.active_buffer, cmd.arg_u64, cmd.arg_dir);
-		break;
+
+			if (ed_mode() == Ed_Mode::Visual) {
+				ed_ctx.yank_region.end = buffer_cursor(ed_active());
+			}
+		} break;
 
 		case Cmd_Insert_String: {
 			Ed_Mode mode = ed_mode();
@@ -385,13 +568,14 @@ ed_exec_command(Ed_Cmd cmd)
 
 		case Cmd_Jump_To_Line: {
 			Buffer *buf = ed_active();
-			u64 line_index = Min(cmd.arg_u64, buf->lines.len);
+			u64 line_index = Min(cmd.arg_u64, buf->line_tbl.len);
 			if (line_index > 0)
 				line_index -= 1;
 
 			auto range  = buffer_line_range(buf, line_index);
-			buffer_move_cursor(buf, range.begin, Direction::Absolute);
+			ed_exec_command(move_cursor(Direction::Absolute, range.begin));
 		} break;
+
 
         case Cmd_Workspace_Open: {
 			string path = cmd.arg_string;
@@ -403,8 +587,23 @@ ed_exec_command(Ed_Cmd cmd)
 			if (ed_active() && ed_active()->file_kind == OS_FileKind::Config) {
 				ed_exec_command(save_buffer());
 			}
-			ed__load_config_file(S("./config.data"));
+			ed__load_config_file();
         } break;
+
+		case Cmd_Copy_Text:
+		{
+			Temp temp = temp_begin(frame_arena());
+			defer(temp_rollback(temp));
+
+			u64 buf_len = ed_active()->data.len;
+			Range_u64 sel = ed_get_selection_region();
+			sel.begin = Min(buf_len, sel.begin);
+			sel.end   = Min(buf_len, sel.end);
+
+			string str = buffer_slice(ed_active(), temp.arena, sel);
+			str = string_to_cstring(temp.arena, str);
+			os_set_clipboard_string(str);
+		} break;
 
         case Cmd_Exit: {
         } break;
@@ -521,18 +720,62 @@ reload_config()
 	return cmd;
 }
 
+funcdef Ed_Cmd
+copy_selected()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Copy_Text;
+	return cmd;
+}
+
+
+funcdef Ed_Cmd
+jump_to_eof()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_EoF;
+	return cmd;
+}
+
+
+funcdef Ed_Cmd
+jump_to_start_of_line()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_Star_Of_Line;
+	return cmd;
+}
+
+funcdef Ed_Cmd
+jump_to_end_of_line()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_End_Of_Line;
+	return cmd;
+}
+
+funcdef Ed_Cmd 
+jump_to_first_non_white()
+{
+	Ed_Cmd cmd = {};
+	cmd.kind = Cmd_Jump_To_First_Non_White;
+	return cmd;
+}
 
 funcdef string
 cmd_function(Ed_CmdKind kind)
 {
 	switch (kind) {
-		case Cmd_Buffer_Open:  return S("open");
-		case Cmd_Buffer_Close: return S("close");
-		case Cmd_Buffer_Save:  return S("save");
-		case Cmd_Exit:         return S("exit");
-		case Cmd_Reload:       return S("reload");
+		case Cmd_Buffer_Open:             return S("open");
+		case Cmd_Buffer_Close:            return S("close");
+		case Cmd_Buffer_Save:             return S("save");
+		case Cmd_Exit:                    return S("exit");
+		case Cmd_Reload:                  return S("reload");
+		case Cmd_Jump_To_EoF:             return S("jump_to_eof");
+		case Cmd_Jump_To_Star_Of_Line:    return S("jump_to_start_of_line");
+		case Cmd_Jump_To_End_Of_Line:     return S("jump_to_end_of_line");
+		case Cmd_Jump_To_First_Non_White: return S("jump_to_first_non_white");
 		default:
 			return S("");
 	}
 }
-
