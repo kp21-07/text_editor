@@ -55,6 +55,9 @@ void entry_point(slice<string> args)
 			else if (input_rune == key_map(decrease_font_size)) gfx_set_font_height(gfx_get_font_height() - 2);
 			else if (input_rune == key_map(paste_text)) cmd = insert_string(os_get_clipboard_string(frame_arena()));
 
+			else if (input_rune == 'u') buffer_undo(ed_active());
+			else if (input_rune == Ctrl('r')) buffer_redo(ed_active());
+
 			else if (
 				input_rune == key_map(jump_to_end_of_line) ||
 				input_rune == key_map(insert_at_end_of_line)

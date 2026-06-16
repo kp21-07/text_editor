@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <math.h>
+#include <type_traits>
 
 funcdef void
 buffer__build_tokens(Buffer *buffer, u64 from)
@@ -120,6 +121,11 @@ buffer_init(Buffer *buffer, string path)
 	buffer->tokens   = big_array_make<Lang_Token>(2000000);
 	buffer->path = path;
 
+	// History
+	
+	buffer->history.undo_stack = list_make(alloc_slice(buffer->arena, Edit_Transaction, 128));
+	buffer->history.redo_stack = list_make(alloc_slice(buffer->arena, Edit_Transaction, 128));
+	
 	Load_Error err = Load_Ok;
 	{
 		OS_FileData file_data = os_file_data(path);
@@ -235,11 +241,64 @@ buffer_line_range(Buffer *buffer, u64 line_index)
 
 
 funcdef void
-buffer_insert(Buffer *buffer, string s)
+buffer_begin_transaction(Buffer *buffer)
+{
+	if (!buffer)
+		return;
+
+	if (buffer->history.has_active_group)
+		return;
+
+	buffer->history.has_active_group = true;
+	buffer->history.active_group.edits = list_make(alloc_slice(buffer->arena, Edit_Op, 512));
+	buffer->history.active_group.cursor_before = { buffer->cursor, ed_get_yank_region() };
+	buffer->history.active_group.cursor_after = {};
+}
+
+funcdef void
+buffer_end_transaction(Buffer *buffer)
+{
+	if (!buffer)
+		return;
+
+	if (!buffer->history.has_active_group)
+		return;
+
+	buffer->history.active_group.cursor_after = { buffer->cursor, ed_get_yank_region() };
+
+	if (buffer->history.active_group.edits.len > 0) {
+		append(&buffer->history.undo_stack, buffer->history.active_group);
+		clear(&buffer->history.redo_stack);
+	}
+
+	buffer->history.has_active_group = false;
+	buffer->history.active_group = {};
+}
+
+funcdef void
+buffer_record_op(Buffer *buffer, Edit_Kind kind, u64 offset, string text)
+{
+    if (!buffer->history.has_active_group) {
+        buffer_begin_transaction(buffer);
+    }
+    
+    Edit_Op op = {};
+    op.kind = kind;
+    op.offset = offset;
+    op.text = string_copy(buffer->arena, text);
+    
+    append(&buffer->history.active_group.edits, op);
+}
+
+funcdef void
+buffer_insert(Buffer *buffer, string s, bool is_raw = false)
 {
 	if (!buffer) return;
-	Flag_Set(buffer->flags, Buffer_Dirty);
-
+	
+	if (!is_raw) {
+		buffer_record_op(buffer, Edit_Insert, buffer->cursor, s);
+	}
+	
 	Temp t = temp_begin(scratch(0, 0));
 	defer(temp_end(t));
 
@@ -263,7 +322,7 @@ buffer_insert(Buffer *buffer, string s)
 
 
 funcdef void
-buffer_delete(Buffer *buffer, u64 count, Direction direction)
+buffer_delete(Buffer *buffer, u64 count, Direction direction, bool is_raw = false)
 {
 	if (!buffer) return;
 
@@ -272,26 +331,41 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
 	if (count == 0 || buf.len == 0)
 		return;
 
-    u64 start = buffer->cursor;
-    u64 end   = buffer->cursor;
+	u64 start = buffer->cursor;
+	u64 end   = buffer->cursor;
 
-    if (direction == Direction::Right)
-    {
-        while (count-- && end < buf.len)
-            end = utf8_next_boundary(buf, end);
-    }
-    else
-    {
-        while (count-- && start > 0)
-            start = utf8_prev_boundary(buf, start);
+	if (is_raw) {
+		if (direction == Direction::Right) {
+			end = Min(buf.len, buffer->cursor + count);
+		} else {
+			start = (buffer->cursor >= count) ? buffer->cursor - count : 0;
+			buffer->cursor = start;
+		}
+	} else {
+		if (direction == Direction::Right)
+		{
+			while (count-- && end < buf.len)
+				end = utf8_next_boundary(buf, end);
+		}
+		else
+		{
+			while (count-- && start > 0)
+				start = utf8_prev_boundary(buf, start);
 
-        end = buffer->cursor;
-        buffer->cursor = start;
-    }
+			end = buffer->cursor;
+			buffer->cursor = start;
+		}
+	}
 
 	if (start == end)
 		return;
 
+	if (!is_raw) {
+		// Record for Undo
+		string deleted_text = buffer_slice(buffer, buffer->arena, {start, end});
+		buffer_record_op(buffer, Edit_Delete, start, deleted_text);
+	} 
+  
 	u8 *mem = (u8 *) buf.raw;
 	memmove(mem + start, mem + end, buf.len - end);
 	buffer->data.len -= (end - start);
@@ -300,6 +374,70 @@ buffer_delete(Buffer *buffer, u64 count, Direction direction)
 	buffer__build_tokens(buffer, start);
 	buffer__sync_desired_column(buffer);
 	Flag_Set(buffer->flags, Buffer_Dirty);
+}
+
+funcdef void
+buffer_undo(Buffer *buf)
+{
+	if (!buf)
+		return;
+
+	if (buf->history.undo_stack.len == 0)
+		return;
+
+	buffer_end_transaction(buf);
+
+	Edit_Transaction group = buf->history.undo_stack[buf->history.undo_stack.len - 1];
+	buf->history.undo_stack.len -= 1;
+
+	// Perform Inverse operation in reverse order
+	for (s64 i = (s64) group.edits.len - 1; i >= 0; i--) {
+		Edit_Op op = group.edits[i];
+		if (op.kind == Edit_Insert) {
+			buf->cursor = op.offset;
+			buffer_delete(buf, op.text.len, Direction::Right, true);
+		}
+		else {
+			buf->cursor = op.offset;
+			buffer_insert(buf, op.text, true);
+		}
+	}
+
+	buf->cursor = group.cursor_before.cursor;
+	ed_set_yank_region(group.cursor_before.yank_region);
+
+	append(&buf->history.redo_stack, group);
+}
+
+funcdef void
+buffer_redo(Buffer *buf)
+{
+	if (!buf)
+		return;
+
+	if (buf->history.redo_stack.len == 0)
+		return;
+
+	Edit_Transaction group = buf->history.redo_stack[buf->history.redo_stack.len - 1];
+	buf->history.redo_stack.len -= 1;
+
+	// Perform original operation in forward order
+	for (u64 i = 0; i < group.edits.len; i++) {
+		Edit_Op op = group.edits[i];
+		if (op.kind == Edit_Insert) {
+			buf->cursor = op.offset;
+			buffer_insert(buf, op.text, true);
+		}
+		else {
+			buf->cursor = op.offset;
+			buffer_delete(buf, op.text.len, Direction::Right, true);
+		}
+	}
+
+	buf->cursor = group.cursor_after.cursor;
+	ed_set_yank_region(group.cursor_after.yank_region);
+
+	append(&buf->history.undo_stack, group);
 }
 
 funcdef void
