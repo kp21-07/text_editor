@@ -371,6 +371,18 @@ ed_get_selection_region()
     return { b, a + 1 };
 }
 
+funcdef Range_u64
+ed_get_yank_region()
+{
+	return ed_ctx.yank_region;
+}
+
+funcdef void
+ed_set_yank_region(Range_u64 range)
+{
+	ed_ctx.yank_region = range;
+}
+
 funcdef void
 ed_exec_command(Ed_Cmd cmd)
 {
@@ -456,6 +468,16 @@ ed_exec_command(Ed_Cmd cmd)
 
 		case Cmd_Mode_Change: {
 			Range_u64 sel = ed_get_selection_region();
+
+			Buffer *active = ed_active();
+			if (active) {
+				if (cmd.arg_mode == Ed_Mode::Normal) {
+					buffer_end_transaction(active);
+				}
+				else if (ed_ctx.mode == Ed_Mode::Normal) {
+					buffer_begin_transaction(active);
+				}
+			}
 
 			ed_ctx.open_buffers = {};
 			ed_ctx.cmd_string = {};
@@ -553,7 +575,10 @@ ed_exec_command(Ed_Cmd cmd)
 				bytes input_bytes = {(u8 *)cmd.arg_string.raw, cmd.arg_string.len};
 				append_slice(&ed_ctx.cmd_string, input_bytes);
 			} else {
+				bool is_normal = (mode == Ed_Mode::Normal);
+				if (is_normal) buffer_begin_transaction(ed_ctx.active_buffer);
 				buffer_insert(ed_ctx.active_buffer, cmd.arg_string);
+				if (is_normal) buffer_end_transaction(ed_ctx.active_buffer);
 			}
 		} break;
 
@@ -562,7 +587,10 @@ ed_exec_command(Ed_Cmd cmd)
 				if (ed_ctx.cmd_string.len >= cmd.arg_u64)	
 					ed_ctx.cmd_string.len -= cmd.arg_u64;
 			} else {
+				bool is_normal = (ed_mode() == Ed_Mode::Normal);
+				if (is_normal) buffer_begin_transaction(ed_ctx.active_buffer);
 				buffer_delete(ed_ctx.active_buffer, cmd.arg_u64, cmd.arg_dir);
+				if (is_normal) buffer_end_transaction(ed_ctx.active_buffer);
 			}
 		break;
 

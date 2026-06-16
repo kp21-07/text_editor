@@ -599,6 +599,39 @@ funcdef void tokenize_source_code_cpp(Lexer_State *state, string source, Token_L
 funcdef void tokenize_source_code_config(Lexer_State *state, string source, Token_List *tokens, u64 scan_start, u64 scan_end);
 
 ////////////////////////
+
+// ~kp @NOTE: undo/redo
+
+enum Edit_Kind {
+	Edit_Insert,
+	Edit_Delete,
+};
+
+struct Edit_Op {
+	Edit_Kind kind;
+	u64 offset;
+	string text;
+};
+
+struct Cursor_State {
+	u64 cursor;
+	Range_u64 yank_region;
+};
+
+struct Edit_Transaction {
+	list<Edit_Op> edits;
+	Cursor_State cursor_before;
+	Cursor_State cursor_after;
+};
+
+struct Edit_History {
+	list<Edit_Transaction> undo_stack;
+	list<Edit_Transaction> redo_stack;
+
+	Edit_Transaction active_group;
+	bool has_active_group;
+};
+
 // ~gaureesh @NOTE: buffer
 
 struct Line {
@@ -636,6 +669,9 @@ struct Buffer {
 	
 	f32 scroll_y;
 	f32 target_scroll_y;
+	
+	// -- history data --
+	Edit_History history;
 };
 
 enum class Direction {
@@ -652,11 +688,17 @@ funcdef u64        buffer_line_count(Buffer *buffer);
 funcdef u64        buffer_line_index_at(Buffer *buffer, u64 buf_index);
 funcdef Range_u64  buffer_line_range(Buffer *buffer, u64 line_index);
 funcdef string     buffer_slice(Buffer *buffer, Arena *arena, Range_u64 rang);
-funcdef void       buffer_insert(Buffer *buffer, string s);
-funcdef void       buffer_delete(Buffer *buffer, u64 count, Direction direction);
+funcdef void       buffer_insert(Buffer *buffer, string s, bool is_raw);
+funcdef void       buffer_delete(Buffer *buffer, u64 count, Direction direction, bool is_raw);
 funcdef void       buffer_move_cursor(Buffer *buf, u64 amount, Direction dir);
 funcdef rune       buffer_char_at(Buffer *buf, s64 index);
 funcdef u64        buffer_cursor(Buffer *buf);
+
+funcdef void buffer_begin_transaction(Buffer *buffer);
+funcdef void buffer_end_transaction(Buffer *buffer);
+
+funcdef void buffer_undo(Buffer *buffer);
+funcdef void buffer_redo(Buffer *buffer);
 
 struct Buffer_Map {
 	slice<Buffer> table;
@@ -741,6 +783,8 @@ funcdef void ed_init();
 funcdef void ed_deinit();
 
 funcdef Range_u64 ed_get_selection_region();
+funcdef Range_u64 ed_get_yank_region();
+funcdef void ed_set_yank_region(Range_u64 range);
 
 funcdef void ed_exec_command(Ed_Cmd command);
 funcdef string ed_command_string();
@@ -776,7 +820,5 @@ funcdef Ed_Cmd jump_to_first_non_white();
 
 funcdef string cmd_function(Ed_CmdKind kind);
 funcdef string modal_string(Ed_Mode mode);
-
-
 
 #endif
